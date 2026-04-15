@@ -28,9 +28,9 @@ The script is idempotent and backs up `settings.json` / `.planning/config.json` 
    - Inside a cmux surface, `$CMUX_SURFACE_ID` / `$CMUX_WORKSPACE_ID` are already set; prefer them over `cmux identify`.
    - `--icon` expects a name (`hammer`, `sparkle`, …), not an emoji.
    - Single-line `cmux send` with trailing `\n` sends Enter; multi-line needs `cmux send-key … return` between lines.
-2. **Two-tier token budget.** `SKILL.md` ≈ 800 tokens, `ORCHESTRATOR.md` ≈ 600 tokens. If you expand either, update the numbers in the final summary block and in `README.md`.
-3. **Config files are merged, never overwritten.** Use the existing Python inline blocks as the pattern — read JSON, `setdefault`, append only missing entries, write back. Preserve user-added hooks and skills.
-4. **Orchestrator content only loads for `execute` phase.** It lives under `phase_skills.execute`, not `agent_skills`. Don't collapse the two.
+2. **Two-tier token budget.** `gsd-cmux-bridge/SKILL.md` ≈ 800 tokens, `gsd-cmux-orchestrator/SKILL.md` ≈ 600 tokens. If you expand either, update the numbers in the final summary block and in `README.md`.
+3. **Config files are merged, never overwritten.** Use the existing Python inline blocks as the pattern — read JSON, normalize legacy shapes, append only missing entries, write back. Preserve user-added hooks and skills. Skip write+backup when the normalized JSON matches the original byte-for-byte.
+4. **GSD `agent_skills` schema is an object keyed by agent-type.** Verified against `~/.claude/get-shit-done/bin/lib/init.cjs` (`buildAgentSkillsBlock`). Values are arrays of skill refs. Use the `global:<name>` prefix — absolute paths are rejected by `validatePath` and silently dropped. There is **no** `phase_skills` key; v5.4.0 removes it from configs written by earlier versions. Orchestrator content is its own global skill (`gsd-cmux-orchestrator`) injected only into `gsd-executor`.
 5. **`set -euo pipefail` is on.** Any new command that can legitimately fail (`grep -q`, `cp` of optional files, cmux calls) must be guarded with `|| true` or explicit `if`.
 6. **`ask()` prompts block the script.** Don't add new prompts inside auto-run paths; users expect the installer to run unattended once the initial checks pass.
 

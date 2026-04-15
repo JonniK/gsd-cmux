@@ -6,7 +6,9 @@ One-shot installer that wires together three tools so Claude Code can drive mult
 - **[cmux](https://cmux.com)** — native macOS terminal with agent/surface orchestration.
 - **[GSD (Get Shit Done)](https://www.npmjs.com/package/get-shit-done-cc)** — spec-driven development workflow for Claude Code.
 
-The installer uses a **two-tier skill injection** strategy so the cmux bridge costs only ~800 tokens per regular subagent and ~1400 tokens for execute-phase orchestrators (down from ~5500 in v1).
+The installer uses a **two-tier skill injection** strategy so the cmux bridge costs only ~800 tokens for most GSD subagents and ~1400 tokens for `gsd-executor` (the execute-phase orchestrator) — down from ~5500 in v1.
+
+Both skills are registered as **global skills** (`global:gsd-cmux-bridge`, `global:gsd-cmux-orchestrator`) in the project's `.planning/config.json` under `agent_skills.<agent-type>`, matching GSD's actual schema.
 
 ## Quick start
 
@@ -33,15 +35,16 @@ The script is idempotent — safe to re-run. Existing `settings.json` and `.plan
 ```
 ~/.claude/
 ├── skills/gsd-cmux-bridge/
-│   ├── SKILL.md              # ~800 tokens — injected into ALL subagents
-│   └── ORCHESTRATOR.md       # ~600 tokens — added only for execute-phase
+│   └── SKILL.md              # ~800 tokens — status/progress/notify lifecycle
+├── skills/gsd-cmux-orchestrator/
+│   └── SKILL.md              # ~600 tokens — wave spawning (gsd-executor only)
 ├── scripts/
 │   ├── gsd-spawn-agent.sh    # spawn subagent in new cmux pane
 │   └── gsd-wait-agent.sh     # poll surface until shell prompt reappears
 └── settings.json              # +PostToolUse(Task) and Stop hooks
 
 ./
-├── .planning/config.json      # agent_skills + phase_skills wiring
+├── .planning/config.json      # agent_skills per-agent-type (global: refs)
 ├── CLAUDE.md                  # <!-- gsd-cmux-bridge --> block
 └── gsd-auto-cmux.sh           # launcher for /gsd-autonomous or /gsd-execute-phase
 ```
@@ -70,9 +73,16 @@ If auto-detect picks the wrong one, pin it: `GSD_CMD_PREFIX=gsd: ./gsd-auto-cmux
 
 ## How the two-tier injection works
 
-Every GSD subagent receives `SKILL.md` (task lifecycle: `set-status`, `set-progress`, `notify`). Only agents spawned during the `execute` phase additionally receive `ORCHESTRATOR.md`, which covers wave spawning, buffer-based data sharing, and file-based signals.
+GSD reads `agent_skills` as an object keyed by agent-type (`gsd-executor`, `gsd-verifier`, `gsd-planner`, …) and injects each skill into that agent's Task prompt. The installer wires:
+
+| Skill | Injected into |
+|---|---|
+| `global:gsd-cmux-bridge` (task lifecycle: `set-status`, `set-progress`, `notify`) | `gsd-executor`, `gsd-verifier`, `gsd-planner`, `gsd-phase-researcher`, `gsd-code-reviewer`, `gsd-security-auditor`, `gsd-debugger` |
+| `global:gsd-cmux-orchestrator` (wave spawning, buffer data sharing, file-based signals) | `gsd-executor` only |
 
 Both files gate every cmux call on `$CMUX_SOCKET_PATH` being set — so a subagent invoked outside cmux simply skips those calls.
+
+Earlier versions (≤5.3.x) wrote `agent_skills` as a flat array and added a non-existent `phase_skills` key; GSD silently dropped both. v5.4.0 migrates legacy configs in place and removes the stale key on re-run.
 
 ## Safety notes
 

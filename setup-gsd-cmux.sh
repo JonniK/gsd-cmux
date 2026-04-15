@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="5.3.1"
+VERSION="5.4.0"
 
 usage() {
   cat <<USAGE
@@ -72,6 +72,7 @@ write_file() {
 CLAUDE_DIR="$HOME/.claude"
 SKILLS_DIR="$CLAUDE_DIR/skills"
 GSD_CMUX_SKILL="$SKILLS_DIR/gsd-cmux-bridge"
+GSD_CMUX_ORCH_SKILL="$SKILLS_DIR/gsd-cmux-orchestrator"
 CMUX_SKILL="$SKILLS_DIR/using-cmux"
 SCRIPTS_DIR="$CLAUDE_DIR/scripts"
 PROJECT_DIR="$PWD"
@@ -234,15 +235,21 @@ log "Validating project"
 git -C "$PROJECT_DIR" rev-parse --git-dir &>/dev/null && ok "git repo" || warn "Not a git repo"
 
 # ── Create directories ────────────────────────────────────────────────────────
-mkdir -p "$GSD_CMUX_SKILL" "$SCRIPTS_DIR" "$PLANNING_DIR"
+mkdir -p "$GSD_CMUX_SKILL" "$GSD_CMUX_ORCH_SKILL" "$SCRIPTS_DIR" "$PLANNING_DIR"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FILE 1: Base SKILL.md (~800 tokens) — injected into ALL subagents
+# FILE 1: Bridge SKILL.md (~800 tokens) — global:gsd-cmux-bridge
 # ═══════════════════════════════════════════════════════════════════════════════
+# Injected into the GSD agent-types configured in FILE 5 below
+# (gsd-executor, gsd-verifier, gsd-planner, gsd-phase-researcher, …).
 
-log "Writing base SKILL.md"
+log "Writing bridge SKILL.md"
 
-write_file "$GSD_CMUX_SKILL/SKILL.md" "SKILL.md (~800 tok)" << 'EOF'
+write_file "$GSD_CMUX_SKILL/SKILL.md" "gsd-cmux-bridge/SKILL.md (~800 tok)" << 'EOF'
+---
+name: gsd-cmux-bridge
+description: cmux task lifecycle (status/progress/notify) for GSD subagents — safe no-op outside cmux
+---
 # cmux Bridge
 
 Skip ALL cmux calls if `$CMUX_SOCKET_PATH` is unset.
@@ -270,15 +277,23 @@ Skip ALL cmux calls if `$CMUX_SOCKET_PATH` is unset.
 EOF
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FILE 2: ORCHESTRATOR.md (~600 tokens) — only for execute-phase
+# FILE 2: Orchestrator SKILL.md (~600 tokens) — only for gsd-executor
 # ═══════════════════════════════════════════════════════════════════════════════
+# Lives in its own global skill dir so GSD can reference it as
+# `global:gsd-cmux-orchestrator` from `agent_skills.gsd-executor`.
+# GSD's agent_skills is keyed per-agent-type (no phase-level scoping),
+# so the two-tier split is now: bridge → most agents, orchestrator → executor.
 
-log "Writing ORCHESTRATOR.md"
+log "Writing orchestrator SKILL.md"
 
-write_file "$GSD_CMUX_SKILL/ORCHESTRATOR.md" "ORCHESTRATOR.md (~600 tok)" << 'EOF'
+write_file "$GSD_CMUX_ORCH_SKILL/SKILL.md" "gsd-cmux-orchestrator/SKILL.md (~600 tok)" << 'EOF'
+---
+name: gsd-cmux-orchestrator
+description: Wave-spawning extension to gsd-cmux-bridge — for GSD execute-phase orchestrators
+---
 # cmux Orchestrator
 
-Extends base SKILL.md for execute-phase wave management.
+Extends `~/.claude/skills/gsd-cmux-bridge/SKILL.md` for execute-phase wave management.
 
 ## Wave execution
 
@@ -386,20 +401,20 @@ chmod +x "$SCRIPTS_DIR/gsd-spawn-agent.sh" "$SCRIPTS_DIR/gsd-wait-agent.sh" 2>/d
 log "Configuring hooks"
 
 SETTINGS="$CLAUDE_DIR/settings.json"
-if [ -f "$SETTINGS" ]; then
-  cp "$SETTINGS" "$SETTINGS.$(date +%s).bak" || warn "Failed to backup settings.json"
-fi
 
 python3 - "$SETTINGS" << 'PYEOF' || err "Failed to configure hooks"
-import json, os, sys
+import json, os, sys, time, shutil
 
 settings_path = sys.argv[1]
+existed = os.path.exists(settings_path)
 
+original_text = ""
 cfg = {}
-if os.path.exists(settings_path):
+if existed:
     try:
         with open(settings_path) as f:
-            cfg = json.load(f)
+            original_text = f.read()
+            cfg = json.loads(original_text) if original_text.strip() else {}
     except (json.JSONDecodeError, ValueError):
         print(f"Warning: {settings_path} is not valid JSON, starting fresh", file=sys.stderr)
         cfg = {}
@@ -423,58 +438,113 @@ for event, entries in new_hooks.items():
         if entry["hooks"][0]["command"] not in existing_cmds:
             existing.append(entry)
 
+new_text = json.dumps(cfg, indent=2) + "\n"
+
+if existed and new_text == original_text:
+    print("unchanged")
+    sys.exit(0)
+
+os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+if existed:
+    shutil.copy2(settings_path, f"{settings_path}.{int(time.time())}.bak")
+
 with open(settings_path, "w") as f:
-    json.dump(cfg, f, indent=2)
+    f.write(new_text)
+print("updated" if existed else "created")
 PYEOF
 
 ok "settings.json"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FILE 5: GSD config.json with conditional orchestrator injection
+# FILE 5: GSD config.json — agent_skills (per-agent-type, `global:` refs)
 # ═══════════════════════════════════════════════════════════════════════════════
+# GSD schema (verified in ~/.claude/get-shit-done/bin/lib/init.cjs):
+#   - `agent_skills` is an OBJECT keyed by agent-type (e.g. "gsd-executor").
+#   - Each value is an array of skill refs.
+#   - `global:<name>` resolves to ~/.claude/skills/<name>/SKILL.md.
+#   - Non-global paths are resolved against project root; absolute paths are
+#     rejected by validatePath and silently dropped.
+#   - There is NO `phase_skills` key — phase-level scoping doesn't exist.
+# Earlier versions (≤5.3.x) wrote a flat array and a `phase_skills` dict;
+# both were silently ignored. This block migrates those legacy shapes.
 
 log "Configuring GSD agent_skills"
 
 GSD_CONFIG="$PLANNING_DIR/config.json"
-if [ -f "$GSD_CONFIG" ]; then
-  cp "$GSD_CONFIG" "$GSD_CONFIG.$(date +%s).bak" || warn "Failed to backup config.json"
-fi
 
-python3 - "$GSD_CONFIG" "$GSD_CMUX_SKILL" << 'PYEOF' || err "Failed to configure GSD"
-import json, os, sys
+python3 - "$GSD_CONFIG" << 'PYEOF' || err "Failed to configure GSD"
+import json, os, sys, time, shutil
 
 config_path = sys.argv[1]
-skills_dir = sys.argv[2]
+existed = os.path.exists(config_path)
 
+# Which agent-types get which skills. Keep narrow: only agents that run
+# shell commands or are long-running benefit from cmux progress/notify.
+BRIDGE = "global:gsd-cmux-bridge"
+ORCH   = "global:gsd-cmux-orchestrator"
+
+BRIDGE_AGENTS = [
+    "gsd-executor",
+    "gsd-verifier",
+    "gsd-planner",
+    "gsd-phase-researcher",
+    "gsd-code-reviewer",
+    "gsd-security-auditor",
+    "gsd-debugger",
+]
+# Orchestrator extension: only the agent that actually spawns waves.
+ORCH_AGENTS = ["gsd-executor"]
+
+original_text = ""
 cfg = {}
-if os.path.exists(config_path):
+if existed:
     try:
         with open(config_path) as f:
-            cfg = json.load(f)
+            original_text = f.read()
+            cfg = json.loads(original_text) if original_text.strip() else {}
     except (json.JSONDecodeError, ValueError):
         print(f"Warning: {config_path} is not valid JSON, starting fresh", file=sys.stderr)
         cfg = {}
 
-base_skill = f"{skills_dir}/SKILL.md"
-orch_skill = f"{skills_dir}/ORCHESTRATOR.md"
+# ── Migrate legacy shapes ────────────────────────────────────────────────────
+# Old: agent_skills as a flat list of absolute paths (ignored by GSD).
+existing = cfg.get("agent_skills")
+if not isinstance(existing, dict):
+    cfg["agent_skills"] = {}
 
-# Base skill for all agents
-skills = cfg.setdefault("agent_skills", [])
-if base_skill not in skills:
-    skills.append(base_skill)
+# Old: phase_skills dict — never read by GSD. Drop it.
+cfg.pop("phase_skills", None)
 
-# Orchestrator skill only for execute-phase
-# GSD uses phase_skills for phase-specific injection
-phase_skills = cfg.setdefault("phase_skills", {})
-execute_skills = phase_skills.setdefault("execute", [])
-if orch_skill not in execute_skills:
-    execute_skills.append(orch_skill)
+# ── Merge skill refs (idempotent, preserves user additions) ──────────────────
+def ensure(agent, ref):
+    lst = cfg["agent_skills"].get(agent)
+    if not isinstance(lst, list):
+        lst = [] if lst is None else [lst]
+    if ref not in lst:
+        lst.append(ref)
+    cfg["agent_skills"][agent] = lst
+
+for a in BRIDGE_AGENTS:
+    ensure(a, BRIDGE)
+for a in ORCH_AGENTS:
+    ensure(a, ORCH)
+
+new_text = json.dumps(cfg, indent=2) + "\n"
+
+if existed and new_text == original_text:
+    print("unchanged")
+    sys.exit(0)
+
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+if existed:
+    shutil.copy2(config_path, f"{config_path}.{int(time.time())}.bak")
 
 with open(config_path, "w") as f:
-    json.dump(cfg, f, indent=2)
+    f.write(new_text)
+print("updated" if existed else "created")
 PYEOF
 
-ok "config.json (base + conditional orchestrator)"
+ok "config.json (agent_skills wired per-agent-type)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # FILE 6: Minimal CLAUDE.md
@@ -595,19 +665,19 @@ command -v claude &>/dev/null && echo -e "  ${GREEN}✓${NC} Claude Code" || ech
 $CMUX_SKILL_OK && echo -e "  ${GREEN}✓${NC} using-cmux skill" || echo -e "  ${YELLOW}!${NC} using-cmux skill"
 echo ""
 echo -e "${BOLD}Files created:${NC}"
-echo "  ~/.claude/skills/gsd-cmux-bridge/SKILL.md        (~800 tok)"
-echo "  ~/.claude/skills/gsd-cmux-bridge/ORCHESTRATOR.md (~600 tok)"
+echo "  ~/.claude/skills/gsd-cmux-bridge/SKILL.md        (~800 tok, global: bridge)"
+echo "  ~/.claude/skills/gsd-cmux-orchestrator/SKILL.md  (~600 tok, global: orchestrator)"
 $CMUX_SKILL_OK && echo "  ~/.claude/skills/using-cmux/                     (cmux skill)" || true
 echo "  ~/.claude/scripts/gsd-spawn-agent.sh"
 echo "  ~/.claude/scripts/gsd-wait-agent.sh"
 echo "  ~/.claude/settings.json                          (hooks)"
-echo "  .planning/config.json                            (agent_skills)"
+echo "  .planning/config.json                            (agent_skills per-agent-type)"
 echo "  CLAUDE.md"
 echo "  gsd-auto-cmux.sh"
 echo ""
 echo -e "${BOLD}Context economy:${NC}"
-echo "  Regular subagent: ~800 tokens"
-echo "  Orchestrator:     ~1400 tokens"
+echo "  Bridge-only agents:    ~800 tokens  (verifier, planner, researcher, …)"
+echo "  gsd-executor:         ~1400 tokens  (bridge + orchestrator)"
 echo "  (vs ~5500 tokens in v1)"
 echo ""
 echo -e "${BOLD}Next steps:${NC}"
