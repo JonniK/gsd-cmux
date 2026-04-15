@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="5.1.0"
+VERSION="5.2.0"
 
 usage() {
   cat <<USAGE
@@ -218,7 +218,7 @@ if ! $GSD_INSTALLED; then
   echo ""
   echo "GSD is spec-driven development for Claude Code."
   echo "Initialize with: npx get-shit-done-cc@latest"
-  echo "Then run: /gsd:new-project in Claude Code"
+  echo "Then run: /gsd-new-project in Claude Code"
   echo ""
   if command -v npx &>/dev/null && ask "Run GSD setup now?"; then
     npx get-shit-done-cc@latest || warn "GSD setup had issues"
@@ -511,7 +511,7 @@ command -v claude &>/dev/null || { echo "claude CLI not found" >&2; exit 1; }
 # Verify GSD is initialized
 if [ ! -f ".planning/config.json" ]; then
   echo "GSD not initialized in this project." >&2
-  echo "Run: claude → /gsd:new-project → /clear" >&2
+  echo "Run: claude → /gsd-new-project → /clear" >&2
   exit 1
 fi
 
@@ -525,10 +525,10 @@ export GSD_PROJECT_DIR="$PWD" GSD_START_TIME="$START"
 
 if [ -n "$PHASE" ]; then
   [ -n "$CMUX_ACTIVE" ] && cmux set-status gsd-phase "Phase $PHASE" --icon "▶️" 2>/dev/null || true
-  claude --dangerously-skip-permissions -p "/gsd:execute-phase $PHASE"
+  claude --dangerously-skip-permissions -p "/gsd-execute-phase $PHASE"
 else
   [ -n "$CMUX_ACTIVE" ] && cmux set-status gsd-phase "auto" --icon "🔄" 2>/dev/null || true
-  claude --dangerously-skip-permissions -p "/gsd:auto"
+  claude --dangerously-skip-permissions -p "/gsd-autonomous"
 fi
 
 MINS=$(( ($(date +%s) - START) / 60 ))
@@ -584,6 +584,6 @@ echo "  (vs ~5500 tokens in v1)"
 echo ""
 echo -e "${BOLD}Next steps:${NC}"
 echo "  1. Open cmux terminal in project directory"
-echo "  2. If new project: claude → /gsd:new-project → /clear"
+echo "  2. If new project: claude → /gsd-new-project → /clear"
 echo "  3. Run: ./gsd-auto-cmux.sh [phase]"
 echo ""

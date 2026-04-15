@@ -43,7 +43,7 @@ The script is idempotent — safe to re-run. Existing `settings.json` and `.plan
 ./
 ├── .planning/config.json      # agent_skills + phase_skills wiring
 ├── CLAUDE.md                  # <!-- gsd-cmux-bridge --> block
-└── gsd-auto-cmux.sh           # launcher for /gsd:auto or /gsd:execute-phase
+└── gsd-auto-cmux.sh           # launcher for /gsd-autonomous or /gsd-execute-phase
 ```
 
 ## Running a phase
@@ -51,8 +51,8 @@ The script is idempotent — safe to re-run. Existing `settings.json` and `.plan
 After setup, from a cmux terminal inside the project:
 
 ```bash
-./gsd-auto-cmux.sh              # run /gsd:auto
-./gsd-auto-cmux.sh 03           # run /gsd:execute-phase 03
+./gsd-auto-cmux.sh              # run /gsd-autonomous
+./gsd-auto-cmux.sh 03           # run /gsd-execute-phase 03
 ```
 
 The launcher sets workspace/status/progress in cmux, exports `GSD_PROJECT_DIR` and `GSD_START_TIME`, and invokes Claude with `--dangerously-skip-permissions`.
