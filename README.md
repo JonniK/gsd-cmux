@@ -74,16 +74,27 @@ If auto-detect picks the wrong one, pin it: `GSD_CMD_PREFIX=gsd: ./gsd-auto-cmux
 
 ## Verifying the bridge
 
-From a cmux terminal, after install:
+Two tests, pick the one that matches what you want to verify:
+
+### Bash-only (no Claude)
 
 ```bash
 ~/.claude/scripts/gsd-cmux-test.sh        # 3 agents (default)
 ~/.claude/scripts/gsd-cmux-test.sh 5      # 5 agents
 ```
 
-The test spawns N child surfaces, each child logs via `cmux log`, writes a signal file in a temp dir, then exits. The orchestrator waits for all N signals (30 s timeout), prints what it got, then closes every spawned surface. Exits non-zero if any agent failed to report.
+Spawns N child surfaces, each child logs via `cmux log`, writes a signal file, then exits. The orchestrator waits (30 s), prints what it got, closes every spawned surface. Tests the raw cmux CLI wiring.
 
-What it proves: `cmux new-split`, `cmux send` (with trailing `\n` as Enter), surface IDs via env vars, `cmux log`/`set-status`/`set-progress`/`notify`, and `cmux close-surface` all work end-to-end. If the test passes, the bridge is wired correctly — a real GSD execute phase will behave the same.
+### From inside Claude Code (full subagent flow)
+
+```
+claude             # start Claude Code in a cmux terminal
+/gsd-cmux-test     # or:  /gsd-cmux-test 5
+```
+
+The slash command lives at `~/.claude/commands/gsd-cmux-test.md`. Claude reads it, spawns N Task subagents in parallel, each subagent opens its own cmux surface, sends a "hello" line, captures it via `cmux read-screen`, closes the surface, and returns a JSON report to the orchestrator. The orchestrator prints a pass/fail table.
+
+What each proves: `cmux new-split`, `cmux send` (trailing `\n` = Enter), surface IDs via env vars, `cmux log`/`set-status`/`set-progress`/`notify`, and `cmux close-surface`. The slash-command version additionally proves the Task-tool parallelism pattern used by GSD's execute phase.
 
 ## How the two-tier injection works
 

@@ -639,6 +639,77 @@ fi
 ok "CLAUDE.md"
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# FILE 6b: Slash command — /gsd-cmux-test
+# ═══════════════════════════════════════════════════════════════════════════════
+# A user-global Claude Code slash command that exercises the bridge from
+# inside a Claude session: parent spawns 3 Task subagents, each subagent
+# opens a new cmux surface, says hello, and returns a short JSON report.
+
+log "Writing /gsd-cmux-test slash command"
+
+COMMANDS_DIR="$CLAUDE_DIR/commands"
+mkdir -p "$COMMANDS_DIR"
+
+write_file "$COMMANDS_DIR/gsd-cmux-test.md" "/gsd-cmux-test command" << 'CMD_EOF'
+---
+description: Smoke-test the cmux bridge — spawn 3 subagents that open new cmux surfaces, say hello, report back
+argument-hint: "[count]"
+---
+# cmux Bridge Smoke Test
+
+Run a live end-to-end test of the gsd-cmux bridge. You are the **orchestrator**.
+
+## Preflight (you do this, not the subagents)
+
+1. Check `$CMUX_SOCKET_PATH` and `$CMUX_SURFACE_ID` are set in the current shell (run `echo` via Bash). If either is missing, stop and tell the user: "Not running inside a cmux surface — open a cmux terminal first." Do not proceed.
+2. Decide `N` = `$1` if provided and numeric in 1..5, otherwise `3`.
+3. Record the orchestrator surface id: `ORCH=$CMUX_SURFACE_ID`.
+
+## Spawn wave
+
+Spawn `N` subagents **in parallel** — a single assistant message with `N` Task tool calls. Use `subagent_type: general-purpose`. Give each agent a unique index `i` (1..N) and the orchestrator surface id.
+
+Each subagent prompt must instruct it to:
+
+1. Verify `$CMUX_SOCKET_PATH` is set (fail loud if not).
+2. Split a new surface off the orchestrator:
+   ```bash
+   DIR=$([ $((i % 2)) -eq 0 ] && echo down || echo right)
+   S=$(cmux new-split "$DIR" --surface "$ORCH" | awk '{print $2}')
+   ```
+   Parse stdout with `awk '{print $2}'` — cmux prints `surface surface:N`.
+3. Rename the tab: `cmux rename-tab --surface "$S" "hello-$i"`.
+4. Send a hello line (trailing `\n` acts as Enter, no separate `send-key` needed):
+   ```bash
+   cmux send --surface "$S" $'echo "hello from agent '"$i"' — I am $CMUX_SURFACE_ID"\n'
+   ```
+5. Log a completion event: `cmux log --level success --source gsd -- "agent $i ready"`.
+6. Wait ~1s for the shell to render, then capture the surface output:
+   ```bash
+   HELLO=$(cmux read-screen --surface "$S" --lines 20 | grep -F "hello from agent $i" | head -1)
+   ```
+7. Close the child surface: `cmux close-surface --surface "$S"`.
+8. Return a single JSON line as the final assistant message: `{"agent": <i>, "surface": "<S>", "hello": "<HELLO line>", "ok": true}`. If any step fails, return `ok: false` with an `error` field.
+
+## Collect + report
+
+After all `N` Task calls return, you (the orchestrator):
+
+1. Parse each subagent's JSON result.
+2. Print a compact table (agent | surface | hello-line | ok).
+3. Tag the orchestrator surface: `cmux set-status gsd-test "bridge $ok_count/$N" --icon sparkle` (via Bash).
+4. State the verdict in one sentence: `PASS` if all `ok=true`, else `FAIL` with which agents failed.
+
+## Rules
+
+- Do **not** target the orchestrator surface with any destructive cmux call. Only operate on surfaces you spawned.
+- Do **not** use `-p` / headless mode anywhere. Normal subagent execution handles blocking commands fine.
+- If `cmux` is not in PATH for a subagent, it must say so in its JSON error — do not silently succeed.
+CMD_EOF
+
+ok "/gsd-cmux-test (use inside a Claude Code session)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # FILE 7: Launcher
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -743,7 +814,8 @@ echo "  ~/.claude/skills/gsd-cmux-orchestrator/SKILL.md  (~600 tok, global: orch
 $CMUX_SKILL_OK && echo "  ~/.claude/skills/using-cmux/                     (cmux skill)" || true
 echo "  ~/.claude/scripts/gsd-spawn-agent.sh"
 echo "  ~/.claude/scripts/gsd-wait-agent.sh"
-echo "  ~/.claude/scripts/gsd-cmux-test.sh               (smoke test)"
+echo "  ~/.claude/scripts/gsd-cmux-test.sh               (bash smoke test)"
+echo "  ~/.claude/commands/gsd-cmux-test.md              (/gsd-cmux-test slash cmd)"
 echo "  ~/.claude/settings.json                          (hooks)"
 echo "  .planning/config.json                            (agent_skills per-agent-type)"
 echo "  CLAUDE.md"
@@ -756,7 +828,9 @@ echo "  (vs ~5500 tokens in v1)"
 echo ""
 echo -e "${BOLD}Next steps:${NC}"
 echo "  1. Open cmux terminal in project directory"
-echo "  2. Verify bridge: ~/.claude/scripts/gsd-cmux-test.sh"
+echo "  2. Verify the bridge, pick one:"
+echo "       bash:   ~/.claude/scripts/gsd-cmux-test.sh"
+echo "       claude: claude → /gsd-cmux-test"
 echo "  3. If new project: claude → /gsd-new-project → /clear"
 echo "  4. Run: ./gsd-auto-cmux.sh [phase]"
 echo ""
