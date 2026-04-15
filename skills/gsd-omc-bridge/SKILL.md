@@ -8,6 +8,16 @@ type: skill
 
 You are a GSD executor running as one worker in an OMC team. Each worker owns **exactly one** pre-assigned plan. The orchestrator spawned you, created your task with `owner=<your-worker-name>`, and is polling for `status=completed`.
 
+## OMC CLI response shape (read this first)
+
+Every `omc team api <op> --json` call wraps the payload as:
+
+```json
+{"ok": true, "operation": "<op>", "data": { ... }}
+```
+
+All jq paths below go through `.data.*`. Task objects use `.id` (not `.task_id`), claim tokens use `.claimToken` (camelCase). Task states are `pending | blocked | in_progress | completed | failed`.
+
 ## Detect your context
 
 OMC sets these env vars before your CLI started:
@@ -32,12 +42,12 @@ ME="${OMC_TEAM_WORKER#*/}"      # "worker-1", "worker-2", …
 
 ### 2. Find your pre-assigned task
 
-Poll `list-tasks` until you see a task whose `owner == $ME` and `status == "open"`. Wait up to 60s; the orchestrator creates tasks **after** spawning workers.
+Poll `list-tasks` until you see a task whose `owner == $ME` and `status == "pending"`. Wait up to 60s; the orchestrator creates tasks **after** spawning workers.
 
 ```bash
 for i in $(seq 1 12); do
   TASKS=$(omc team api list-tasks --input "{\"team_name\":\"$TEAM\"}" --json)
-  MINE=$(jq -r --arg me "$ME" '.tasks[] | select(.owner==$me and .status=="open") | .task_id' <<<"$TASKS" | head -1)
+  MINE=$(jq -r --arg me "$ME" '.data.tasks[] | select(.owner==$me and .status=="pending") | .id' <<<"$TASKS" | head -1)
   [ -n "$MINE" ] && break
   sleep 5
 done
@@ -50,10 +60,10 @@ TID="$MINE"
 ```bash
 RESP=$(omc team api claim-task --input \
   "{\"team_name\":\"$TEAM\",\"task_id\":\"$TID\",\"worker\":\"$ME\"}" --json)
-CLAIM_TOKEN=$(jq -r .claim_token <<<"$RESP")
+CLAIM_TOKEN=$(jq -r .data.claimToken <<<"$RESP")
 ```
 
-Claiming moves the task `open → in_progress`. The `claim_token` is required for every later state transition. **Lose it and you cannot mark the task completed.** Hold it in a shell var; do not write it to disk.
+Claiming moves the task `pending → in_progress`. The `claimToken` is required for every later state transition. **Lose it and you cannot mark the task completed.** Hold it in a shell var; do not write it to disk.
 
 ### 4. Parse the plan pointer
 
@@ -64,7 +74,7 @@ gsd-plan:<plan-id>|<plan-path>|<summary-path>
 ```
 
 ```bash
-DESC=$(omc team api read-task --input "{\"team_name\":\"$TEAM\",\"task_id\":\"$TID\"}" --json | jq -r .task.description)
+DESC=$(omc team api read-task --input "{\"team_name\":\"$TEAM\",\"task_id\":\"$TID\"}" --json | jq -r .data.task.description)
 PLAN_ID=$(awk -F'|' '{print $1}' <<<"$DESC" | sed 's/^gsd-plan://')
 PLAN_PATH=$(awk -F'|' '{print $2}' <<<"$DESC")
 SUMMARY_PATH=$(awk -F'|' '{print $3}' <<<"$DESC")
@@ -111,7 +121,9 @@ omc team api transition-task-status --input \
   --json
 ```
 
-Valid states: `open → in_progress → completed | failed`. No "done", no "blocked". Use `failed` plus a mailbox message for blockers.
+Note: the CLI input flag is `claim_token` (snake_case), but the value you pass comes from `.data.claimToken` (camelCase) in the claim-task response.
+
+Valid states: `pending → in_progress → completed | failed`. No "open", no "done". Use `failed` plus a mailbox message for blockers (separate from the `blocked` state, which is reserved for dependency-gated tasks).
 
 ### 8. Shutdown cleanly
 

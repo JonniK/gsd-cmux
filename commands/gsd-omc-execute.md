@@ -68,9 +68,13 @@ Report the echoed summary to the user and continue.
 ## Step 2 — Prepare team state
 
 ```bash
-# Team name must match OMC regex ^[a-z0-9][a-z0-9-]{0,63}$
+# Team name must match OMC regex ^[a-z0-9][a-z0-9-]{0,29}$ (max 30 chars)
 RAND=$(od -An -N2 -i /dev/urandom | tr -d ' ')
-TEAM="gsd-$(echo "$PHASE" | tr '[:upper:]_' '[:lower:]-' | sed 's/[^a-z0-9-]//g')-${RAND}"
+# Budget: "gsd-" (4) + slug + "-" (1) + RAND (up to 5) = room for slug ≤ 20
+SLUG=$(echo "$PHASE" | tr '[:upper:]_' '[:lower:]-' | sed 's/[^a-z0-9-]//g' | cut -c1-20 | sed 's/-*$//')
+TEAM="gsd-${SLUG}-${RAND}"
+# Hard-cap in case slug ends empty or RAND was longer than expected
+TEAM=$(echo "$TEAM" | cut -c1-30 | sed 's/-*$//')
 OMC_DIR="$PHASE_DIR/.omc"
 mkdir -p "$OMC_DIR"
 echo "$TEAM" > "$OMC_DIR/team.txt"
@@ -124,7 +128,7 @@ Verify workers are alive. Parse worker names from `omc team api read-config`:
 
 ```bash
 WORKER_NAMES=$(omc team api read-config --input "{\"team_name\":\"$TEAM\"}" --json \
-  | jq -r '.config.workers[].name')
+  | jq -r '.data.workers | sort_by(.index) | .[].name')
 echo "$WORKER_NAMES"
 ```
 
@@ -153,7 +157,7 @@ for i in "${!PLAN_IDS[@]}"; do
   RESP=$(omc team api create-task --input "$(jq -nc \
     --arg tn "$TEAM" --arg s "$SUBJ" --arg d "$DESC" --arg o "$WNAME" \
     '{team_name:$tn, subject:$s, description:$d, owner:$o}')" --json)
-  TID=$(jq -r .task.task_id <<<"$RESP")
+  TID=$(jq -r .data.task.id <<<"$RESP")
   [ -z "$TID" ] || [ "$TID" = "null" ] && { echo "✗ create-task failed: $RESP" >&2; exit 1; }
   TASK_IDS+=("$TID")
   echo "  task $TID → worker $WNAME → $PID"
@@ -169,8 +173,8 @@ printf '%s\n' "${TASK_IDS[@]}" > "$OMC_DIR/wave-$WAVE_KEY.tasks"
 TEAM=$(cat "$OMC_DIR/team.txt")
 DONE=0; FAIL=0
 TOTAL="$COUNT"
-TIMEOUT_SECS=1800      # 30 min wave budget; surfaces a stuck wave
-ELAPSED=0; INTERVAL=15
+TIMEOUT_SECS="${GSD_OMC_WAVE_TIMEOUT:-1800}"      # 30 min wave budget; surfaces a stuck wave
+ELAPSED=0; INTERVAL="${GSD_OMC_POLL_INTERVAL:-15}"
 
 while [ "$ELAPSED" -lt "$TIMEOUT_SECS" ]; do
   LIST=$(omc team api list-tasks --input "{\"team_name\":\"$TEAM\"}" --json)
@@ -178,7 +182,7 @@ while [ "$ELAPSED" -lt "$TIMEOUT_SECS" ]; do
   DONE=0; FAIL=0; OPEN=0
   while read -r tid; do
     [ -z "$tid" ] && continue
-    ST=$(jq -r --arg t "$tid" '.tasks[] | select(.task_id==$t) | .status' <<<"$LIST")
+    ST=$(jq -r --arg t "$tid" '.data.tasks[] | select(.id==$t) | .status' <<<"$LIST")
     case "$ST" in
       completed) DONE=$((DONE+1));;
       failed)    FAIL=$((FAIL+1));;

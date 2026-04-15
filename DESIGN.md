@@ -90,7 +90,7 @@ The adapter **skips OMC's `team-plan` / `team-prd` / `team-verify` / `team-fix`*
 
 ### 4.3 Identifiers
 
-- OMC team name: `gsd-<phase>-<timestamp6>` (must match `/^[a-z0-9][a-z0-9-]{0,29}$/` — validated by `omc team api`)
+- OMC team name: `gsd-<slug>-<rand>` (must match `/^[a-z0-9][a-z0-9-]{0,29}$/` — max 30 chars — validated by `omc team api`; slug is truncated to ≤ 20 chars)
 - OMC task ids: one per GSD plan. Stored by OMC in `~/.claude/tasks/<team-name>/<n>.json`
 - Worker names: `w-<plan-id>` (OMC assigns)
 
@@ -171,13 +171,13 @@ Workflow (follow exactly — skill global:gsd-omc-bridge has full details):
 
 2. Wait for your pre-assigned task (owner=$ME), poll every 5s for ≤60s:
      omc team api list-tasks --input "{\"team_name\":\"$TEAM\"}" --json
-   Find the task where .owner == "$ME" and .status == "open".
-   Capture task_id and its current version (use .version as expected_version).
+   Response is wrapped: {ok, operation, data:{tasks:[...]}}. Find the task where
+   .data.tasks[].owner == "$ME" and .status == "pending". Task id field is .id.
 
-3. Claim it — save the claim_token:
+3. Claim it — save the claim_token (response is .data.claimToken, camelCase):
      RESP=$(omc team api claim-task --input \
        "{\"team_name\":\"$TEAM\",\"task_id\":\"$TID\",\"worker\":\"$ME\"}" --json)
-     CLAIM_TOKEN=$(jq -r .claim_token <<<"$RESP")
+     CLAIM_TOKEN=$(jq -r .data.claimToken <<<"$RESP")
    Claiming sets status to "in_progress".
 
 4. Parse the task description (format "gsd-plan:<plan-id>|<plan-path>|<summary-path>").
@@ -197,7 +197,7 @@ Workflow (follow exactly — skill global:gsd-omc-bridge has full details):
 
 The worker knows these calls because the `gsd-omc-bridge` skill is loaded via `agent_skills` (`gsd-executor` agent-type, `global:gsd-omc-bridge` ref).
 
-**Valid task states:** `open → in_progress → completed | failed`. No "done", no "blocked" — use `failed` plus a mailbox message for blockers.
+**Valid task states:** `pending | blocked | in_progress | completed | failed`. A newly-created task starts `pending`; claim transitions it to `in_progress`; the worker ends in `completed` or `failed`. "blocked" is reserved for dependency-gated tasks (not used in v1). Use `failed` plus a mailbox message for runtime blockers.
 
 ## 7. Messaging patterns
 
