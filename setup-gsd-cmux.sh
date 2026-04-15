@@ -392,7 +392,80 @@ cmux log --level warning --source gsd -- "$LABEL timed out" 2>/dev/null || true
 exit 1
 WAIT_EOF
 
-chmod +x "$SCRIPTS_DIR/gsd-spawn-agent.sh" "$SCRIPTS_DIR/gsd-wait-agent.sh" 2>/dev/null || true
+write_file "$SCRIPTS_DIR/gsd-cmux-test.sh" "gsd-cmux-test.sh" << 'TEST_EOF'
+#!/usr/bin/env bash
+# End-to-end smoke test of the gsd-cmux bridge:
+#   1. Spawns N child surfaces (split panes) from the current cmux surface.
+#   2. Each child logs via `cmux log`, writes a signal file, then exits.
+#   3. Orchestrator waits for all signals, prints them, closes the surfaces.
+# Usage: gsd-cmux-test.sh [N]   (default N=3)
+set -euo pipefail
+
+[ -z "${CMUX_SOCKET_PATH:-}" ] && { echo "✗ Not inside cmux (CMUX_SOCKET_PATH unset)" >&2; exit 1; }
+[ -z "${CMUX_SURFACE_ID:-}" ]  && { echo "✗ CMUX_SURFACE_ID unset — run from a cmux surface" >&2; exit 1; }
+command -v cmux &>/dev/null   || { echo "✗ cmux binary not in PATH" >&2; exit 1; }
+
+N="${1:-3}"
+[[ "$N" =~ ^[0-9]+$ ]] || { echo "✗ N must be an integer, got: $N" >&2; exit 1; }
+[ "$N" -lt 1 ] || [ "$N" -gt 8 ] && { echo "✗ N must be 1..8" >&2; exit 1; }
+
+SIGNAL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gsd-cmux-test.XXXXXX")
+SURFACES=()
+cleanup() {
+  for S in "${SURFACES[@]}"; do cmux close-surface --surface "$S" 2>/dev/null || true; done
+  rm -rf "$SIGNAL_DIR"
+}
+trap cleanup EXIT
+
+ORCH="$CMUX_SURFACE_ID"
+echo "▶ Spawning $N test agents from $ORCH"
+echo "  signals: $SIGNAL_DIR"
+cmux set-status gsd-test "Test bridge: $N agents" --icon sparkle 2>/dev/null || true
+cmux set-progress 0.1 --label "Spawning" 2>/dev/null || true
+
+for i in $(seq 1 "$N"); do
+  [ $((i % 2)) -eq 0 ] && DIR="down" || DIR="right"
+  S=$(cmux new-split "$DIR" --surface "$ORCH" | awk '{print $2}')
+  [ -z "$S" ] && { echo "✗ Failed to spawn agent $i" >&2; exit 1; }
+  SURFACES+=("$S")
+  cmux rename-tab --surface "$S" "test-$i" 2>/dev/null || true
+  # Child payload. Trailing \n sends Enter; single-quoted CMD so $vars
+  # expand in the child shell, not the parent.
+  CMD="echo \"agent $i alive in \$CMUX_SURFACE_ID\" && cmux log --level success --source gsd -- 'agent $i ✓' 2>/dev/null; date +%s > '$SIGNAL_DIR/agent-$i.done'; sleep 1; exit"
+  cmux send --surface "$S" "${CMD}"$'\n'
+  echo "  ✓ spawned agent $i → $S"
+done
+
+cmux set-progress 0.5 --label "Waiting" 2>/dev/null || true
+echo "▶ Waiting up to 30s for $N signal files…"
+DEADLINE=$(( $(date +%s) + 30 ))
+count=0
+while :; do
+  count=$(find "$SIGNAL_DIR" -maxdepth 1 -name 'agent-*.done' -type f 2>/dev/null | wc -l | tr -d ' ')
+  [ "$count" -ge "$N" ] && break
+  [ "$(date +%s)" -ge "$DEADLINE" ] && break
+  sleep 1
+done
+
+echo "▶ Received $count/$N signals:"
+for f in "$SIGNAL_DIR"/agent-*.done; do
+  [ -f "$f" ] || continue
+  echo "  $(basename "$f") ts=$(cat "$f")"
+done
+
+cmux set-progress 1.0 --label "Done ($count/$N)" 2>/dev/null || true
+cmux notify --title "GSD bridge test" --body "$count/$N agents OK" 2>/dev/null || true
+
+if [ "$count" -eq "$N" ]; then
+  echo "✓ Bridge test PASSED ($count/$N)"
+  exit 0
+else
+  echo "✗ Bridge test FAILED ($count/$N)" >&2
+  exit 1
+fi
+TEST_EOF
+
+chmod +x "$SCRIPTS_DIR/gsd-spawn-agent.sh" "$SCRIPTS_DIR/gsd-wait-agent.sh" "$SCRIPTS_DIR/gsd-cmux-test.sh" 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # FILE 4: Claude settings.json hooks
@@ -670,6 +743,7 @@ echo "  ~/.claude/skills/gsd-cmux-orchestrator/SKILL.md  (~600 tok, global: orch
 $CMUX_SKILL_OK && echo "  ~/.claude/skills/using-cmux/                     (cmux skill)" || true
 echo "  ~/.claude/scripts/gsd-spawn-agent.sh"
 echo "  ~/.claude/scripts/gsd-wait-agent.sh"
+echo "  ~/.claude/scripts/gsd-cmux-test.sh               (smoke test)"
 echo "  ~/.claude/settings.json                          (hooks)"
 echo "  .planning/config.json                            (agent_skills per-agent-type)"
 echo "  CLAUDE.md"
@@ -682,6 +756,7 @@ echo "  (vs ~5500 tokens in v1)"
 echo ""
 echo -e "${BOLD}Next steps:${NC}"
 echo "  1. Open cmux terminal in project directory"
-echo "  2. If new project: claude → /gsd-new-project → /clear"
-echo "  3. Run: ./gsd-auto-cmux.sh [phase]"
+echo "  2. Verify bridge: ~/.claude/scripts/gsd-cmux-test.sh"
+echo "  3. If new project: claude → /gsd-new-project → /clear"
+echo "  4. Run: ./gsd-auto-cmux.sh [phase]"
 echo ""

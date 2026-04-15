@@ -40,7 +40,8 @@ The script is idempotent — safe to re-run. Existing `settings.json` and `.plan
 │   └── SKILL.md              # ~600 tokens — wave spawning (gsd-executor only)
 ├── scripts/
 │   ├── gsd-spawn-agent.sh    # spawn subagent in new cmux pane
-│   └── gsd-wait-agent.sh     # poll surface until shell prompt reappears
+│   ├── gsd-wait-agent.sh     # poll surface until shell prompt reappears
+│   └── gsd-cmux-test.sh      # smoke test — spawn N agents, wait, close
 └── settings.json              # +PostToolUse(Task) and Stop hooks
 
 ./
@@ -70,6 +71,19 @@ GSD ships as either flat skills (`~/.claude/skills/gsd-<name>`, dash notation) o
 4. Fallback: `gsd-`.
 
 If auto-detect picks the wrong one, pin it: `GSD_CMD_PREFIX=gsd: ./gsd-auto-cmux.sh`.
+
+## Verifying the bridge
+
+From a cmux terminal, after install:
+
+```bash
+~/.claude/scripts/gsd-cmux-test.sh        # 3 agents (default)
+~/.claude/scripts/gsd-cmux-test.sh 5      # 5 agents
+```
+
+The test spawns N child surfaces, each child logs via `cmux log`, writes a signal file in a temp dir, then exits. The orchestrator waits for all N signals (30 s timeout), prints what it got, then closes every spawned surface. Exits non-zero if any agent failed to report.
+
+What it proves: `cmux new-split`, `cmux send` (with trailing `\n` as Enter), surface IDs via env vars, `cmux log`/`set-status`/`set-progress`/`notify`, and `cmux close-surface` all work end-to-end. If the test passes, the bridge is wired correctly — a real GSD execute phase will behave the same.
 
 ## How the two-tier injection works
 
