@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="5.3.0"
+VERSION="5.3.1"
 
 usage() {
   cat <<USAGE
@@ -542,12 +542,21 @@ GSD_EXEC_CMD="/${PREFIX}execute-phase "
 GSD_AUTO_CMD="/${PREFIX}autonomous"
 echo "Using slash-command prefix: /${PREFIX}…"
 
+# Note: we intentionally do NOT use `-p` (headless/print mode).
+# gsd-autonomous and other GSD skills use AskUserQuestion for blockers,
+# grey-area acceptance, and validation — those hang forever under -p.
+# Interactive mode launches the session with the slash command pre-filled
+# and returns when the user exits claude (/exit or Ctrl-D).
+# Override with GSD_HEADLESS=1 if you know your phase won't hit any prompts.
+CLAUDE_FLAGS=(--dangerously-skip-permissions)
+[ "${GSD_HEADLESS:-0}" = "1" ] && CLAUDE_FLAGS+=(-p)
+
 if [ -n "$PHASE" ]; then
   [ -n "$CMUX_ACTIVE" ] && cmux set-status gsd-phase "Phase $PHASE" --icon hammer 2>/dev/null || true
-  claude --dangerously-skip-permissions -p "${GSD_EXEC_CMD}${PHASE}"
+  claude "${CLAUDE_FLAGS[@]}" "${GSD_EXEC_CMD}${PHASE}"
 else
   [ -n "$CMUX_ACTIVE" ] && cmux set-status gsd-phase "auto" --icon sparkle 2>/dev/null || true
-  claude --dangerously-skip-permissions -p "${GSD_AUTO_CMD}"
+  claude "${CLAUDE_FLAGS[@]}" "${GSD_AUTO_CMD}"
 fi
 
 MINS=$(( ($(date +%s) - START) / 60 ))
