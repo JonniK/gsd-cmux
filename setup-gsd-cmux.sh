@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="5.0.0"
+VERSION="5.0.1"
 
 usage() {
   cat <<USAGE
@@ -165,10 +165,14 @@ GSD_INSTALLED=false
 if [ -d "$PLANNING_DIR" ] && [ -f "$PLANNING_DIR/config.json" ]; then
   ok "GSD initialized in project (.planning exists)"
   GSD_INSTALLED=true
-elif command -v npx &>/dev/null; then
-  # Check if package is accessible
-  if npx --yes get-shit-done-cc@latest --version &>/dev/null 2>&1; then
-    ok "GSD available via npx"
+elif command -v npm &>/dev/null; then
+  # Registry probe only — never execute the package here.
+  # `npx get-shit-done-cc@latest --version` can hang: the package may ignore
+  # --version and drop into interactive mode, and `npx --yes` only suppresses
+  # its own prompts, not the package's stdin reads.
+  GSD_VER=$(timeout 10 npm view get-shit-done-cc version 2>/dev/null || true)
+  if [ -n "$GSD_VER" ]; then
+    ok "GSD available via npx (v$GSD_VER)"
     GSD_INSTALLED=true
   fi
 fi
