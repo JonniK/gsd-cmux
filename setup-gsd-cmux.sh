@@ -407,7 +407,10 @@ command -v cmux &>/dev/null   || { echo "✗ cmux binary not in PATH" >&2; exit 
 
 N="${1:-3}"
 [[ "$N" =~ ^[0-9]+$ ]] || { echo "✗ N must be an integer, got: $N" >&2; exit 1; }
-[ "$N" -lt 1 ] || [ "$N" -gt 8 ] && { echo "✗ N must be 1..8" >&2; exit 1; }
+if [ "$N" -lt 1 ] || [ "$N" -gt 8 ]; then
+  echo "✗ N must be 1..8" >&2
+  exit 1
+fi
 
 SIGNAL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gsd-cmux-test.XXXXXX")
 SURFACES=()
@@ -429,8 +432,9 @@ for i in $(seq 1 "$N"); do
   [ -z "$S" ] && { echo "✗ Failed to spawn agent $i" >&2; exit 1; }
   SURFACES+=("$S")
   cmux rename-tab --surface "$S" "test-$i" 2>/dev/null || true
-  # Child payload. Trailing \n sends Enter; single-quoted CMD so $vars
-  # expand in the child shell, not the parent.
+  # Child payload. Double-quoted here so $i and $SIGNAL_DIR expand in the
+  # parent, but \$CMUX_SURFACE_ID stays literal so it expands in the child
+  # shell where the agent runs. Trailing \n below is Enter.
   CMD="echo \"agent $i alive in \$CMUX_SURFACE_ID\" && cmux log --level success --source gsd -- 'agent $i ✓' 2>/dev/null; date +%s > '$SIGNAL_DIR/agent-$i.done'; sleep 1; exit"
   cmux send --surface "$S" "${CMD}"$'\n'
   echo "  ✓ spawned agent $i → $S"
@@ -667,26 +671,33 @@ Run a live end-to-end test of the gsd-cmux bridge. You are the **orchestrator**.
 
 ## Spawn wave
 
-Spawn `N` subagents **in parallel** — a single assistant message with `N` Task tool calls. Use `subagent_type: general-purpose`. Give each agent a unique index `i` (1..N) and the orchestrator surface id.
+Spawn `N` subagents **in parallel** — a single assistant message with `N` Task tool calls. Use `subagent_type: general-purpose`. Give each agent two pieces of data:
+
+- a unique integer index `i` in 1..N, and
+- the **literal string value** of the orchestrator surface id (the value you read from `$CMUX_SURFACE_ID`, e.g. `surface:3` — not the variable name). Each subagent runs its Bash calls in a separate process tree and does **not** inherit orchestrator env.
+
+Build each subagent's prompt by substituting the literal surface id and `i` into the template below before you issue the Task call. Do **not** tell the subagent to reference `$ORCH` — that variable doesn't exist in its shell.
 
 Each subagent prompt must instruct it to:
 
 1. Verify `$CMUX_SOCKET_PATH` is set (fail loud if not).
-2. Split a new surface off the orchestrator:
+2. Split a new surface off the orchestrator surface you were given (replace `<ORCH>` with that literal id):
    ```bash
-   DIR=$([ $((i % 2)) -eq 0 ] && echo down || echo right)
+   ORCH='<ORCH>'
+   DIR=$([ $((<i> % 2)) -eq 0 ] && echo down || echo right)
    S=$(cmux new-split "$DIR" --surface "$ORCH" | awk '{print $2}')
    ```
    Parse stdout with `awk '{print $2}'` — cmux prints `surface surface:N`.
-3. Rename the tab: `cmux rename-tab --surface "$S" "hello-$i"`.
+3. Rename the tab: `cmux rename-tab --surface "$S" "hello-<i>"`.
 4. Send a hello line (trailing `\n` acts as Enter, no separate `send-key` needed):
    ```bash
-   cmux send --surface "$S" $'echo "hello from agent '"$i"' — I am $CMUX_SURFACE_ID"\n'
+   cmux send --surface "$S" "echo 'hello from agent <i> — I am '\$CMUX_SURFACE_ID"$'\n'
    ```
-5. Log a completion event: `cmux log --level success --source gsd -- "agent $i ready"`.
+   `\$CMUX_SURFACE_ID` is escaped so it expands in the **child** shell, not the subagent's shell.
+5. Log a completion event: `cmux log --level success --source gsd -- "agent <i> ready"`.
 6. Wait ~1s for the shell to render, then capture the surface output:
    ```bash
-   HELLO=$(cmux read-screen --surface "$S" --lines 20 | grep -F "hello from agent $i" | head -1)
+   HELLO=$(cmux read-screen --surface "$S" --lines 20 | grep -F "hello from agent <i>" | head -1)
    ```
 7. Close the child surface: `cmux close-surface --surface "$S"`.
 8. Return a single JSON line as the final assistant message: `{"agent": <i>, "surface": "<S>", "hello": "<HELLO line>", "ok": true}`. If any step fails, return `ok: false` with an `error` field.
