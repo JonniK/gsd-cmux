@@ -1,0 +1,14 @@
+# Artifacts produced by running setup-gsd-cmux.sh in this directory
+.planning/
+CLAUDE.md
+gsd-auto-cmux.sh
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Backups created by the installer
+*.bak
