@@ -4,59 +4,64 @@ Guidance for AI coding agents (Claude Code, Codex, etc.) working on this reposit
 
 ## Repository shape
 
-Single-purpose repo. The only real artifact is `setup-gsd-cmux.sh` — a bash installer that wires GSD + cmux + Claude Code together. There is no application code, no test suite, no build step.
+This repo is a **thin adapter** between GSD and OMC — it is not an orchestrator, framework, or replacement for either tool. The only runtime artifacts are:
 
-## What the script actually does
+- `setup-gsd-omc.sh` — idempotent installer
+- `skills/gsd-omc-bridge/SKILL.md` — worker lifecycle contract (loaded via GSD `agent_skills`)
+- `commands/gsd-omc-run.md` — full-lifecycle entry point (`/gsd-omc-run`)
+- `commands/gsd-omc-execute.md` — single-phase wave orchestrator (`/gsd-omc-execute`)
+- `commands/gsd-omc-verify.md` — end-to-end smoke test (`/gsd-omc-verify`)
+- `uninstall-gsd-cmux.sh` — removes prior v5.x artifacts
+- `legacy/` — archived v5.4.0 installer (reference; deleted in Phase H)
 
-Read `setup-gsd-cmux.sh` end-to-end before editing. Section banners (`PHASE 0` … `FILE 7`) mark logical units:
+See [DECISION.md](DECISION.md) for the scope pivot, [DESIGN.md](DESIGN.md) for architecture, and [PLAN.md](PLAN.md) for the implementation plan.
 
-- **PHASE 0–2** — checks for `python3`, `git`, `node ≥ 18`, `claude` CLI, cmux binary; offers auto-install where reasonable.
-- **PHASE 3** — installs the `using-cmux` skill from GitHub into `~/.claude/skills/using-cmux/`.
-- **PHASE 4** — verifies GSD is initialized (`.planning/config.json`) or reachable via `npx get-shit-done-cc@latest`.
-- **PHASE 5 + FILEs 1–7** — writes the bridge skill, helper scripts, hooks, GSD config, `CLAUDE.md` block, and the `gsd-auto-cmux.sh` launcher.
+## Invariants — do not break these
 
-The script is idempotent and backs up `settings.json` / `.planning/config.json` before mutating them (keeps last 3 backups).
+1. **Target is the thin adapter.** If OMC or GSD already provides something (panes, team API, worker lifecycle, phase-plan graph, Task subagents), the adapter uses it — never re-implements it. "Copy-pasting OMC logic into our commands" is a smell.
 
-## Invariants — don't break these
+2. **`agent_skills` schema.** GSD's `init.cjs` validates `agent_skills` as an **object keyed by agent-type** (e.g. `gsd-executor`), values are arrays of `global:<name>` references. Absolute paths are silently dropped by `validatePath`. There is **no** `phase_skills` key. This invariant survives because it is GSD's contract, not ours.
 
-1. **Every cmux call must be gated on `$CMUX_SOCKET_PATH`.** The bridge has to work when Claude runs outside cmux.
+3. **Literal substitution.** Task subagents and spawned CLI workers run in separate process trees with no env inheritance from the orchestrator's Bash tool calls. When a slash command template references a dynamic value (phase name, team name, worker name), substitute it as a **literal string** at prompt-build time — never assume `$VAR` is visible. (Memory: `feedback_task_subagents_need_literal_substitution`.)
 
-   Other cmux specifics worth knowing before touching bridge docs or helper scripts (verified against cmux 0.63.2 + the upstream `using-cmux` skill):
-   - No global `--json` flag — only some subcommands (`tree`, `browser screenshot`) expose one.
-   - Use `cmux new-split <dir>` (accepts `--surface`), **not** `cmux new-pane` (only `--workspace`).
-   - Parse split output with `awk '{print $2}'` — stdout is `surface surface:N`.
-   - Inside a cmux surface, `$CMUX_SURFACE_ID` / `$CMUX_WORKSPACE_ID` are already set; prefer them over `cmux identify`.
-   - `--icon` expects a name (`hammer`, `sparkle`, …), not an emoji.
-   - Single-line `cmux send` with trailing `\n` sends Enter; multi-line needs `cmux send-key … return` between lines.
-2. **Two-tier token budget.** `gsd-cmux-bridge/SKILL.md` ≈ 800 tokens, `gsd-cmux-orchestrator/SKILL.md` ≈ 600 tokens. If you expand either, update the numbers in the final summary block and in `README.md`.
-3. **Config files are merged, never overwritten.** Use the existing Python inline blocks as the pattern — read JSON, normalize legacy shapes, append only missing entries, write back. Preserve user-added hooks and skills. Skip write+backup when the normalized JSON matches the original byte-for-byte.
-4. **GSD `agent_skills` schema is an object keyed by agent-type.** Verified against `~/.claude/get-shit-done/bin/lib/init.cjs` (`buildAgentSkillsBlock`). Values are arrays of skill refs. Use the `global:<name>` prefix — absolute paths are rejected by `validatePath` and silently dropped. There is **no** `phase_skills` key; v5.4.0 removes it from configs written by earlier versions. Orchestrator content is its own global skill (`gsd-cmux-orchestrator`) injected only into `gsd-executor`.
-5. **`set -euo pipefail` is on.** Any new command that can legitimately fail (`grep -q`, `cp` of optional files, cmux calls) must be guarded with `|| true` or explicit `if`.
-6. **`ask()` prompts block the script.** Don't add new prompts inside auto-run paths; users expect the installer to run unattended once the initial checks pass.
+4. **Read the consumer, not the template.** Before writing or merging config shapes (especially `.planning/config.json`), grep GSD's parser (`~/.claude/get-shit-done/bin/lib/init.cjs`) to confirm the shape it actually accepts. Template files can drift. (Memory: `feedback_read_consumer_before_writing_config`.)
 
-## Style
+5. **Registry probe, never execute.** To check that a package is installed, use `npm view` / `npm list -g` / `--version`. Never "run the tool to see if it exists" — side effects, hangs, background processes. (Memory: `feedback_registry_probe_not_execute`.)
 
-- Match the existing bash style: `log / ok / warn / err / ask` helpers, lowercase function names, uppercase env-like globals (`CLAUDE_DIR`, `PLANNING_DIR`).
-- Heredocs for multi-line file content. Use `'EOF'` (quoted) when the body contains `$…` that must not be expanded at install time — the current script relies on this for the skill files.
-- Keep section banners (`# ═══…`) — they are load-bearing for humans skimming the script.
+6. **Idempotency infra in v1.** Every file write in `setup-gsd-omc.sh` goes through `write_file` — 3-branch helper (new / unchanged / differs-with-backup). Must be correct on the first rerun, not patched after. (Memory: `feedback_idempotency_infra_before_rerun`.)
 
-## Testing a change
+7. **`using-X` skill is canonical.** For cmux specifics, read `~/.claude/skills/using-cmux/skills/using-cmux/SKILL.md` before writing `cmux send*` / `new-split` / `send-key` logic. Template files drift; the skill is authoritative. (Memory: `feedback_using_skill_is_canonical_source`.)
 
-There is no automated test. After editing:
+8. **OMC team API — real signatures, not guesses.** Verify `omc team api <op> --help` before writing the call. Known traps:
+   - `claim-task` returns a `claim_token`; every `transition-task-status` requires it.
+   - Task states are `open → in_progress → completed | failed`. No "done", no "blocked".
+   - `create-task` with `owner` pre-assigns to a worker; workers self-identify via `$OMC_TEAM_WORKER` = `<team>/<worker-name>`.
 
-1. `bash -n setup-gsd-cmux.sh` — syntax check.
-2. `shellcheck setup-gsd-cmux.sh` if available.
-3. Run the script in a throwaway directory (or a git worktree) and diff the resulting `~/.claude/skills/gsd-cmux-bridge/`, `~/.claude/settings.json`, and `.planning/config.json` against a known-good copy.
-4. Re-run the script — it must produce no further changes and must not duplicate hook or skill entries.
+9. **Never touch `$CLAUDE/hooks/` or `$CLAUDE/settings.json` hooks.** OMC owns its lifecycle hooks; GSD owns its own. This adapter is **slash commands + one skill**, nothing else. (Lesson from v5.x hook-conflict bugs surfaced by `omc doctor conflicts`.)
 
-## Version bumps
+10. **`/gsd-omc-run` wraps, not intercepts.** v1 reroutes only the `execute-phase` stage through OMC. Planner / verifier / researcher subagents stay inline. Full Task interception is Z-mode (v2) — see DESIGN §15. Do not attempt Z-mode in v1 patches.
 
-`VERSION="5.0.0"` at the top of the script is the source of truth. Bump it when behavior changes, and mention the change in the commit message. There is no changelog file.
+## Verification gate
 
-## Out of scope
+Any change to `commands/*.md` or `skills/gsd-omc-bridge/SKILL.md` must pass `/gsd-omc-verify` before being considered done. The scaffolded `_verify-phase` exercises: spawn → create-task with `owner` → claim → SUMMARY.md → transition → teardown.
 
-Don't add:
+For `--full`, add `/gsd-omc-run phase _verify-phase` to exercise the wrapper.
 
-- A test framework, linter config, or CI unless explicitly requested.
-- Language runtimes beyond bash + the Python inline blocks already in use.
-- Windows support — cmux is macOS-only.
+## File-touching discipline
+
+| Path                                          | When to edit                                              |
+|-----------------------------------------------|-----------------------------------------------------------|
+| `setup-gsd-omc.sh`                            | New file to install / schema migration                    |
+| `skills/gsd-omc-bridge/SKILL.md`              | Worker lifecycle changes only; keep under 900 words       |
+| `commands/gsd-omc-execute.md`                 | Wave-orchestration logic                                  |
+| `commands/gsd-omc-run.md`                     | Mode logic / state-file schema                            |
+| `commands/gsd-omc-verify.md`                  | Add a new regression scenario                             |
+| `DECISION.md`                                 | Never; append-only audit trail                            |
+| `DESIGN.md`                                   | Architectural changes (keep §1–§3 as the contract)        |
+| `PLAN.md`                                     | While planning; frozen after Phase H commit               |
+
+## Before committing
+
+1. Rerun `/gsd-omc-verify` — assertions pass.
+2. Self-audit against memory lessons (PLAN Phase H checklist).
+3. Keep commit atomic — never mix adapter code with unrelated repo changes.

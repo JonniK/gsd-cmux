@@ -1,126 +1,80 @@
 # cc-cmux-gsd-integration
 
-One-shot installer that wires together three tools so Claude Code can drive multi-agent GSD workflows inside cmux:
+A thin adapter that runs [GSD (Get Shit Done)](https://www.npmjs.com/package/get-shit-done-cc) projects end-to-end on top of [oh-my-claude-sisyphus (OMC)](https://www.npmjs.com/package/oh-my-claude-sisyphus) team orchestration, with parallel `execute-phase` work materialized as visible [cmux](https://cmux.com) panes.
 
-- **[Claude Code](https://docs.anthropic.com/claude/docs/claude-code)** — Anthropic's CLI coding agent.
-- **[cmux](https://cmux.com)** — native macOS terminal with agent/surface orchestration.
-- **[GSD (Get Shit Done)](https://www.npmjs.com/package/get-shit-done-cc)** — spec-driven development workflow for Claude Code.
+**Project lifecycle in, panes of CLI workers out.** The adapter never re-implements what OMC and GSD already do — it is only the wiring between them.
 
-The installer uses a **two-tier skill injection** strategy so the cmux bridge costs only ~800 tokens for most GSD subagents and ~1400 tokens for `gsd-executor` (the execute-phase orchestrator) — down from ~5500 in v1.
+See [DECISION.md](DECISION.md) for why this exists (the pivot away from a custom cmux bridge) and [DESIGN.md](DESIGN.md) for how the pieces fit.
 
-Both skills are registered as **global skills** (`global:gsd-cmux-bridge`, `global:gsd-cmux-orchestrator`) in the project's `.planning/config.json` under `agent_skills.<agent-type>`, matching GSD's actual schema.
+## Install
 
-## Quick start
+Prereqs on PATH: `omc` (`npm i -g oh-my-claude-sisyphus`), `cmux`, `claude`, `node`, `jq`, `python3`.
 
 ```bash
-cd your-project
-./setup-gsd-cmux.sh
+cd your-gsd-project
+bash setup-gsd-omc.sh
 ```
 
-The script is idempotent — safe to re-run. Existing `settings.json` and `.planning/config.json` are backed up (last 3 copies kept).
+Writes:
 
-## What it checks and installs
+| Where                                             | What                                              |
+|---------------------------------------------------|---------------------------------------------------|
+| `~/.claude/skills/gsd-omc-bridge/SKILL.md`        | Worker lifecycle contract                         |
+| `~/.claude/commands/gsd-omc-run.md`               | Full-lifecycle entry point                        |
+| `~/.claude/commands/gsd-omc-execute.md`           | Single-phase orchestrator (wave → panes)          |
+| `~/.claude/commands/gsd-omc-verify.md`            | End-to-end smoke test                             |
+| `.planning/config.json`                           | `agent_skills.gsd-executor += global:gsd-omc-bridge` |
 
-| Component | Check | Auto-install |
-|---|---|---|
-| `python3`, `git` | required | ✗ (errors if missing) |
-| Node.js ≥ 18 | required for GSD | optional (via Homebrew) |
-| Claude Code CLI | required | optional (via npm) |
-| cmux (`/Applications/cmux.app`) | optional | opens cmux.com |
-| `using-cmux` skill | `~/.claude/skills/using-cmux/` | clones from GitHub |
-| GSD | `.planning/config.json` or npx | runs `npx get-shit-done-cc@latest` |
+Does **not** touch `~/.claude/settings.json` or `~/.claude/hooks/` — OMC and GSD own those.
 
-## What it creates
+## Use
 
-```
-~/.claude/
-├── skills/gsd-cmux-bridge/
-│   └── SKILL.md              # ~800 tokens — status/progress/notify lifecycle
-├── skills/gsd-cmux-orchestrator/
-│   └── SKILL.md              # ~600 tokens — wave spawning (gsd-executor only)
-├── scripts/
-│   ├── gsd-spawn-agent.sh    # spawn subagent in new cmux pane
-│   ├── gsd-wait-agent.sh     # poll surface until shell prompt reappears
-│   └── gsd-cmux-test.sh      # smoke test — spawn N agents, wait, close
-└── settings.json              # +PostToolUse(Task) and Stop hooks
-
-./
-├── .planning/config.json      # agent_skills per-agent-type (global: refs)
-├── CLAUDE.md                  # <!-- gsd-cmux-bridge --> block
-└── gsd-auto-cmux.sh           # launcher for /gsd-autonomous or /gsd-execute-phase
-```
-
-## Running a phase
-
-After setup, from a cmux terminal inside the project:
+From inside a cmux workspace in your project directory:
 
 ```bash
-./gsd-auto-cmux.sh              # run /gsd-autonomous
-./gsd-auto-cmux.sh 03           # run /gsd-execute-phase 03
+# Primary — drive the project to completion
+/gsd-omc-run autonomous
+
+# Kick off a fresh milestone end-to-end
+/gsd-omc-run milestone "ship v0.2"
+
+# Single phase (plan if needed → panes → verify)
+/gsd-omc-run phase 03-auth
+
+# Resume from last state
+/gsd-omc-run resume
+
+# Just the execute-phase stage for a phase that's already planned
+/gsd-omc-execute 03-auth
+
+# Sanity check the adapter
+/gsd-omc-verify
 ```
 
-The launcher sets workspace/status/progress in cmux, exports `GSD_PROJECT_DIR` and `GSD_START_TIME`, and invokes Claude with `--dangerously-skip-permissions`.
+`/gsd-omc-run autonomous` iterates the roadmap — for each phase, it hands off to `/gsd-plan-phase` (inline subagent), then `/gsd-omc-execute` (cmux panes), then `/gsd-verify-phase` (inline). Stops on first verification failure.
 
-### Slash-command notation auto-detect
+During `execute-phase`, each `PLAN-*.md` in the active wave runs as one OMC worker in its own cmux pane. The workers coordinate via `omc team api` (task claim / status / mailbox) — no custom message bus.
 
-GSD ships as either flat skills (`~/.claude/skills/gsd-<name>`, dash notation) or a namespaced plugin (`gsd:<name>`). The launcher detects which at run time:
+## Architecture (1 paragraph)
 
-1. `GSD_CMD_PREFIX` env var (values `gsd-` or `gsd:`) wins.
-2. A plugin entry matching `gsd`/`get-shit-done` in `~/.claude/plugins/installed_plugins.json` → `gsd:`.
-3. `~/.claude/skills/gsd-autonomous` present → `gsd-`.
-4. Fallback: `gsd-`.
+**GSD** owns what to build (roadmap, phase, plan graph, SUMMARY/VERIFICATION contract). **OMC** owns how to run N CLI workers in parallel (team state, task lifecycle, tmux-via-cmux panes, heartbeats). The adapter is the nervous system: it reads GSD's `phase-plan-index`, pre-assigns each plan to a spawned worker via `owner`, polls for `completed|failed`, and stitches the per-plan SUMMARY.mds into a phase SUMMARY. Nothing more.
 
-If auto-detect picks the wrong one, pin it: `GSD_CMD_PREFIX=gsd: ./gsd-auto-cmux.sh`.
+See [DESIGN.md](DESIGN.md) for the full architecture and [PLAN.md](PLAN.md) for the implementation plan.
 
-## Verifying the bridge
+## Future: Z-mode
 
-Two tests, pick the one that matches what you want to verify:
+v1 reroutes only `execute-phase` to OMC. Planner, verifier, researchers still run as inline Claude Code subagents. A future v2 ("Z-mode") intercepts every Task call so every subagent lands in its own cmux pane. See DESIGN.md §15 for the three candidate implementation paths.
 
-### Bash-only (no Claude)
+## Uninstall
 
 ```bash
-~/.claude/scripts/gsd-cmux-test.sh        # 3 agents (default)
-~/.claude/scripts/gsd-cmux-test.sh 5      # 5 agents
+bash uninstall-gsd-cmux.sh      # removes v5.x artifacts (legacy bridge)
+# For the v6 adapter, manually delete:
+rm -rf ~/.claude/skills/gsd-omc-bridge
+rm -f ~/.claude/commands/gsd-omc-{run,execute,verify}.md
+# and optionally strip global:gsd-omc-bridge from .planning/config.json agent_skills
 ```
-
-Spawns N child surfaces, each child logs via `cmux log`, writes a signal file, then exits. The orchestrator waits (30 s), prints what it got, closes every spawned surface. Tests the raw cmux CLI wiring.
-
-### From inside Claude Code (full subagent flow)
-
-```
-claude             # start Claude Code in a cmux terminal
-/gsd-cmux-test     # or:  /gsd-cmux-test 5
-```
-
-The slash command lives at `~/.claude/commands/gsd-cmux-test.md`. Claude reads it, spawns N Task subagents in parallel, each subagent opens its own cmux surface, sends a "hello" line, captures it via `cmux read-screen`, closes the surface, and returns a JSON report to the orchestrator. The orchestrator prints a pass/fail table.
-
-What each proves: `cmux new-split`, `cmux send` (trailing `\n` = Enter), surface IDs via env vars, `cmux log`/`set-status`/`set-progress`/`notify`, and `cmux close-surface`. The slash-command version additionally proves the Task-tool parallelism pattern used by GSD's execute phase.
-
-## How the two-tier injection works
-
-GSD reads `agent_skills` as an object keyed by agent-type (`gsd-executor`, `gsd-verifier`, `gsd-planner`, …) and injects each skill into that agent's Task prompt. The installer wires:
-
-| Skill | Injected into |
-|---|---|
-| `global:gsd-cmux-bridge` (task lifecycle: `set-status`, `set-progress`, `notify`) | `gsd-executor`, `gsd-verifier`, `gsd-planner`, `gsd-phase-researcher`, `gsd-code-reviewer`, `gsd-security-auditor`, `gsd-debugger` |
-| `global:gsd-cmux-orchestrator` (wave spawning, buffer data sharing, file-based signals) | `gsd-executor` only |
-
-Both files gate every cmux call on `$CMUX_SOCKET_PATH` being set — so a subagent invoked outside cmux simply skips those calls.
-
-Earlier versions (≤5.3.x) wrote `agent_skills` as a flat array and added a non-existent `phase_skills` key; GSD silently dropped both. v5.4.0 migrates legacy configs in place and removes the stale key on re-run.
-
-## Safety notes
-
-- The launcher uses `claude --dangerously-skip-permissions`. Only run inside trusted project directories.
-- `settings.json` and `.planning/config.json` are merged, not overwritten; prior hooks/skills entries are preserved.
-- Backups: `<file>.<epoch>.bak` — the three most recent are kept, older ones pruned.
-
-## Requirements
-
-- macOS (cmux is Mac-only; the rest works on Linux but without the cmux surface integration).
-- Python 3, git, Node.js 18+.
-- An Anthropic API key configured for Claude Code.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+See [LICENSE](LICENSE).
