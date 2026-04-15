@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="5.2.0"
+VERSION="5.3.0"
 
 usage() {
   cat <<USAGE
@@ -250,8 +250,8 @@ Skip ALL cmux calls if `$CMUX_SOCKET_PATH` is unset.
 ## Task lifecycle
 
 ```bash
-# Start
-[ -n "$CMUX_SOCKET_PATH" ] && cmux set-status gsd-task "${GSD_TASK_NAME:-task}" --icon "⚡" && cmux set-progress 0.05 --label "Starting"
+# Start — icons are NAMED (sparkle, hammer), not emoji
+[ -n "$CMUX_SOCKET_PATH" ] && cmux set-status gsd-task "${GSD_TASK_NAME:-task}" --icon sparkle && cmux set-progress 0.05 --label "Starting"
 
 # Progress: update proportionally (step / total_steps)
 # Example for 5-step task: 0.2 → 0.4 → 0.6 → 0.8 → 1.0
@@ -263,10 +263,10 @@ Skip ALL cmux calls if `$CMUX_SOCKET_PATH` is unset.
 
 ## Rules
 
-- Never target surfaces you didn't create
-- Always `--surface <ref>` explicitly
-- `cmux send` needs `cmux send-key enter` after
-- Save before close: `cmux read-screen --surface $S --scrollback`
+- Never target surfaces you didn't create.
+- Prefer env refs: `$CMUX_SURFACE_ID` / `$CMUX_WORKSPACE_ID` are auto-set. Pass `--surface` / `--workspace` explicitly when targeting a spawned child.
+- Single-line `send`: a trailing `\n` works as Enter. Multi-line content needs `cmux send-key <surface> return` between lines.
+- Save before close: `cmux read-screen --surface $S --scrollback`.
 EOF
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -283,8 +283,8 @@ Extends base SKILL.md for execute-phase wave management.
 ## Wave execution
 
 ```bash
-# Own surface (never close)
-ORCH=$(cmux --json identify | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('surface_ref') or d.get('surface_id',''))")
+# Orchestrator's own surface is already in env — never close it
+ORCH="${CMUX_SURFACE_ID:?not inside cmux}"
 
 # Spawn via helpers
 S1=$(~/.claude/scripts/gsd-spawn-agent.sh ".planning/phases/01/PLAN.md" "auth" "right")
@@ -335,20 +335,22 @@ set -euo pipefail
 PLAN="$1"; LABEL="$2"; DIR="${3:-right}"
 [ -z "${CMUX_SOCKET_PATH:-}" ] && { echo "CMUX_SOCKET_PATH not set" >&2; exit 1; }
 
-ORCH=$(timeout 5 cmux --json identify 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('surface_ref') or d.get('surface_id',''))")
-[ -z "$ORCH" ] && { echo "Failed to get orchestrator surface" >&2; exit 1; }
+# Orchestrator's surface is in env — no need to call `cmux identify`
+ORCH="${CMUX_SURFACE_ID:-}"
+[ -z "$ORCH" ] && { echo "CMUX_SURFACE_ID not set — not in a cmux surface" >&2; exit 1; }
 
-RESULT=$(cmux --json new-pane --direction "$DIR" --surface "$ORCH")
-S=$(python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('surface_ref') or d.get('surface_id',''))" <<< "$RESULT")
-[ -z "$S" ] && { echo "Failed to create pane" >&2; exit 1; }
+# `cmux new-split` is the canonical split command; its stdout is
+# "surface surface:N" — take the second field.
+S=$(cmux new-split "$DIR" --surface "$ORCH" | awk '{print $2}')
+[ -z "$S" ] && { echo "Failed to create split" >&2; exit 1; }
 
 cmux rename-tab --surface "$S" "$LABEL"
 
 # Escape single quotes in paths
 SAFE_PWD="${PWD//\'/\'\\\'\'}"
 SAFE_PLAN="${PLAN//\'/\'\\\'\'}"
-cmux send --surface "$S" "cd '${SAFE_PWD}' && claude --dangerously-skip-permissions -p 'Execute: ${SAFE_PLAN}'"
-cmux send-key --surface "$S" enter
+# Trailing \n on a single-line send works as Enter — no separate send-key needed.
+cmux send --surface "$S" "cd '${SAFE_PWD}' && claude --dangerously-skip-permissions -p 'Execute: ${SAFE_PLAN}'\n"
 echo "$S"
 SPAWN_EOF
 
@@ -517,18 +519,35 @@ fi
 
 if [ -n "$CMUX_ACTIVE" ]; then
   cmux rename-workspace "GSD: $(basename "$PWD")" 2>/dev/null || true
-  cmux set-status gsd-project "$(basename "$PWD")" --icon "🏗️" 2>/dev/null || true
+  cmux set-status gsd-project "$(basename "$PWD")" --icon hammer 2>/dev/null || true
   cmux set-progress 0.0 --label "Starting" 2>/dev/null || true
 fi
 
 export GSD_PROJECT_DIR="$PWD" GSD_START_TIME="$START"
 
-if [ -n "$PHASE" ]; then
-  [ -n "$CMUX_ACTIVE" ] && cmux set-status gsd-phase "Phase $PHASE" --icon "▶️" 2>/dev/null || true
-  claude --dangerously-skip-permissions -p "/gsd-execute-phase $PHASE"
+# Detect slash-command notation:
+#   flat skills   → /gsd-<name>   (plain ~/.claude/skills/gsd-* install)
+#   plugin ns     → /gsd:<name>   (installed under a "gsd" plugin namespace)
+# Override with GSD_CMD_PREFIX=gsd-  or  GSD_CMD_PREFIX=gsd:
+if [ -n "${GSD_CMD_PREFIX:-}" ]; then
+  PREFIX="$GSD_CMD_PREFIX"
+elif grep -qE '"(gsd|get-shit-done)[-@"]' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null; then
+  PREFIX="gsd:"
+elif [ -d "$HOME/.claude/skills/gsd-autonomous" ]; then
+  PREFIX="gsd-"
 else
-  [ -n "$CMUX_ACTIVE" ] && cmux set-status gsd-phase "auto" --icon "🔄" 2>/dev/null || true
-  claude --dangerously-skip-permissions -p "/gsd-autonomous"
+  PREFIX="gsd-"
+fi
+GSD_EXEC_CMD="/${PREFIX}execute-phase "
+GSD_AUTO_CMD="/${PREFIX}autonomous"
+echo "Using slash-command prefix: /${PREFIX}…"
+
+if [ -n "$PHASE" ]; then
+  [ -n "$CMUX_ACTIVE" ] && cmux set-status gsd-phase "Phase $PHASE" --icon hammer 2>/dev/null || true
+  claude --dangerously-skip-permissions -p "${GSD_EXEC_CMD}${PHASE}"
+else
+  [ -n "$CMUX_ACTIVE" ] && cmux set-status gsd-phase "auto" --icon sparkle 2>/dev/null || true
+  claude --dangerously-skip-permissions -p "${GSD_AUTO_CMD}"
 fi
 
 MINS=$(( ($(date +%s) - START) / 60 ))

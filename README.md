@@ -57,6 +57,17 @@ After setup, from a cmux terminal inside the project:
 
 The launcher sets workspace/status/progress in cmux, exports `GSD_PROJECT_DIR` and `GSD_START_TIME`, and invokes Claude with `--dangerously-skip-permissions`.
 
+### Slash-command notation auto-detect
+
+GSD ships as either flat skills (`~/.claude/skills/gsd-<name>`, dash notation) or a namespaced plugin (`gsd:<name>`). The launcher detects which at run time:
+
+1. `GSD_CMD_PREFIX` env var (values `gsd-` or `gsd:`) wins.
+2. A plugin entry matching `gsd`/`get-shit-done` in `~/.claude/plugins/installed_plugins.json` → `gsd:`.
+3. `~/.claude/skills/gsd-autonomous` present → `gsd-`.
+4. Fallback: `gsd-`.
+
+If auto-detect picks the wrong one, pin it: `GSD_CMD_PREFIX=gsd: ./gsd-auto-cmux.sh`.
+
 ## How the two-tier injection works
 
 Every GSD subagent receives `SKILL.md` (task lifecycle: `set-status`, `set-progress`, `notify`). Only agents spawned during the `execute` phase additionally receive `ORCHESTRATOR.md`, which covers wave spawning, buffer-based data sharing, and file-based signals.

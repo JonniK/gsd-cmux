@@ -20,6 +20,14 @@ The script is idempotent and backs up `settings.json` / `.planning/config.json` 
 ## Invariants — don't break these
 
 1. **Every cmux call must be gated on `$CMUX_SOCKET_PATH`.** The bridge has to work when Claude runs outside cmux.
+
+   Other cmux specifics worth knowing before touching bridge docs or helper scripts (verified against cmux 0.63.2 + the upstream `using-cmux` skill):
+   - No global `--json` flag — only some subcommands (`tree`, `browser screenshot`) expose one.
+   - Use `cmux new-split <dir>` (accepts `--surface`), **not** `cmux new-pane` (only `--workspace`).
+   - Parse split output with `awk '{print $2}'` — stdout is `surface surface:N`.
+   - Inside a cmux surface, `$CMUX_SURFACE_ID` / `$CMUX_WORKSPACE_ID` are already set; prefer them over `cmux identify`.
+   - `--icon` expects a name (`hammer`, `sparkle`, …), not an emoji.
+   - Single-line `cmux send` with trailing `\n` sends Enter; multi-line needs `cmux send-key … return` between lines.
 2. **Two-tier token budget.** `SKILL.md` ≈ 800 tokens, `ORCHESTRATOR.md` ≈ 600 tokens. If you expand either, update the numbers in the final summary block and in `README.md`.
 3. **Config files are merged, never overwritten.** Use the existing Python inline blocks as the pattern — read JSON, `setdefault`, append only missing entries, write back. Preserve user-added hooks and skills.
 4. **Orchestrator content only loads for `execute` phase.** It lives under `phase_skills.execute`, not `agent_skills`. Don't collapse the two.
