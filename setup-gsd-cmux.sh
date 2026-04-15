@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="5.0.1"
+VERSION="5.1.0"
 
 usage() {
   cat <<USAGE
@@ -31,7 +31,43 @@ log()  { echo -e "${CYAN}▶${NC} $*"; }
 ok()   { echo -e "${GREEN}✓${NC} $*"; }
 warn() { echo -e "${YELLOW}!${NC} $*"; }
 err()  { echo -e "${RED}✗${NC} $*" >&2; exit 1; }
-ask()  { read -p $'\033[1;33m?\033[0m '"$1"' [y/N] ' -n 1 -r; echo; [[ $REPLY =~ ^[Yy]$ ]]; }
+# ask() reads from /dev/tty so it still works when stdin is a heredoc
+# (write_file pipes content via stdin and then calls ask on conflicts).
+ask()  { read -p $'\033[1;33m?\033[0m '"$1"' [y/N] ' -n 1 -r </dev/tty; echo; [[ $REPLY =~ ^[Yy]$ ]]; }
+
+# write_file <path> <desc>  (content on stdin)
+#   - missing file  → write
+#   - identical     → no-op, log "(unchanged)"
+#   - differs       → warn + ask; on yes, keep timestamped .bak and overwrite
+# Preserves local edits across re-runs.
+write_file() {
+  local path="$1" desc="$2" tmp
+  tmp=$(mktemp)
+  cat > "$tmp"
+
+  if [ ! -f "$path" ]; then
+    mkdir -p "$(dirname "$path")"
+    mv "$tmp" "$path"
+    ok "$desc (new)"
+    return 0
+  fi
+
+  if cmp -s "$tmp" "$path"; then
+    rm -f "$tmp"
+    ok "$desc (unchanged)"
+    return 0
+  fi
+
+  warn "$desc exists and differs: $path"
+  if ask "Overwrite (backup kept)?"; then
+    cp "$path" "$path.$(date +%s).bak"
+    mv "$tmp" "$path"
+    ok "$desc (updated, backup saved)"
+  else
+    rm -f "$tmp"
+    ok "$desc (kept existing)"
+  fi
+}
 
 CLAUDE_DIR="$HOME/.claude"
 SKILLS_DIR="$CLAUDE_DIR/skills"
@@ -206,7 +242,7 @@ mkdir -p "$GSD_CMUX_SKILL" "$SCRIPTS_DIR" "$PLANNING_DIR"
 
 log "Writing base SKILL.md"
 
-cat > "$GSD_CMUX_SKILL/SKILL.md" << 'EOF'
+write_file "$GSD_CMUX_SKILL/SKILL.md" "SKILL.md (~800 tok)" << 'EOF'
 # cmux Bridge
 
 Skip ALL cmux calls if `$CMUX_SOCKET_PATH` is unset.
@@ -233,15 +269,13 @@ Skip ALL cmux calls if `$CMUX_SOCKET_PATH` is unset.
 - Save before close: `cmux read-screen --surface $S --scrollback`
 EOF
 
-ok "SKILL.md (~800 tok)"
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # FILE 2: ORCHESTRATOR.md (~600 tokens) — only for execute-phase
 # ═══════════════════════════════════════════════════════════════════════════════
 
 log "Writing ORCHESTRATOR.md"
 
-cat > "$GSD_CMUX_SKILL/ORCHESTRATOR.md" << 'EOF'
+write_file "$GSD_CMUX_SKILL/ORCHESTRATOR.md" "ORCHESTRATOR.md (~600 tok)" << 'EOF'
 # cmux Orchestrator
 
 Extends base SKILL.md for execute-phase wave management.
@@ -288,15 +322,13 @@ rm -rf "$SIGNAL_DIR"                                                # cleanup
 ```
 EOF
 
-ok "ORCHESTRATOR.md (~600 tok)"
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # FILE 3: Helper scripts
 # ═══════════════════════════════════════════════════════════════════════════════
 
 log "Writing helper scripts"
 
-cat > "$SCRIPTS_DIR/gsd-spawn-agent.sh" << 'SPAWN_EOF'
+write_file "$SCRIPTS_DIR/gsd-spawn-agent.sh" "gsd-spawn-agent.sh" << 'SPAWN_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [ $# -lt 2 ] && { echo "Usage: $0 <plan> <label> [right|down]" >&2; exit 1; }
@@ -320,7 +352,7 @@ cmux send-key --surface "$S" enter
 echo "$S"
 SPAWN_EOF
 
-cat > "$SCRIPTS_DIR/gsd-wait-agent.sh" << 'WAIT_EOF'
+write_file "$SCRIPTS_DIR/gsd-wait-agent.sh" "gsd-wait-agent.sh" << 'WAIT_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [ $# -lt 2 ] && { echo "Usage: $0 <surface> <label> [timeout_secs]" >&2; exit 1; }
@@ -343,8 +375,7 @@ cmux log --level warning --source gsd -- "$LABEL timed out" 2>/dev/null || true
 exit 1
 WAIT_EOF
 
-chmod +x "$SCRIPTS_DIR/gsd-spawn-agent.sh" "$SCRIPTS_DIR/gsd-wait-agent.sh"
-ok "Helper scripts"
+chmod +x "$SCRIPTS_DIR/gsd-spawn-agent.sh" "$SCRIPTS_DIR/gsd-wait-agent.sh" 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # FILE 4: Claude settings.json hooks
@@ -468,7 +499,7 @@ ok "CLAUDE.md"
 
 log "Writing launcher"
 
-cat > "$PROJECT_DIR/gsd-auto-cmux.sh" << 'LAUNCH_EOF'
+write_file "$PROJECT_DIR/gsd-auto-cmux.sh" "gsd-auto-cmux.sh" << 'LAUNCH_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 PHASE="${1:-}"
@@ -508,8 +539,7 @@ fi
 echo "Complete (${MINS}m)"
 LAUNCH_EOF
 
-chmod +x "$PROJECT_DIR/gsd-auto-cmux.sh"
-ok "gsd-auto-cmux.sh"
+chmod +x "$PROJECT_DIR/gsd-auto-cmux.sh" 2>/dev/null || true
 
 # ── Backup rotation ──────────────────────────────────────────────────────────
 # Keep only the 3 most recent backups per config file
