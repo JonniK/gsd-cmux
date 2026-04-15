@@ -17,7 +17,7 @@
 #   --dry-run   print actions without doing them
 #   --no-global only write project-scoped files (skip ~/.claude)
 #
-# See DESIGN.md, PLAN.md.
+# See DESIGN.md.
 set -euo pipefail
 
 # ── Colors / logging ─────────────────────────────────────────────────────────
@@ -177,7 +177,6 @@ existed = os.path.exists(config_path)
 # Scope: only gsd-executor loads the adapter skill. Other agents don't run
 # worker lifecycle; loading the skill would be noise in their context.
 NEW_REF = "global:gsd-omc-bridge"
-STALE_REFS = {"global:gsd-cmux-bridge", "global:gsd-cmux-orchestrator"}
 TARGET_AGENTS = ["gsd-executor"]
 
 original_text = ""
@@ -191,21 +190,10 @@ if existed:
         print(f"Warning: {config_path} is not valid JSON, starting fresh", file=sys.stderr)
         cfg = {}
 
-# Migrate legacy shapes: flat list → dict; drop phase_skills if present.
-existing = cfg.get("agent_skills")
-if not isinstance(existing, dict):
+# Coerce unexpected agent_skills shapes (non-dict) into the correct form.
+# GSD's init.cjs validates agent_skills as an object keyed by agent-type.
+if not isinstance(cfg.get("agent_skills"), dict):
     cfg["agent_skills"] = {}
-cfg.pop("phase_skills", None)
-
-# Drop stale v5.x refs from every agent bucket.
-for agent in list(cfg["agent_skills"].keys()):
-    lst = cfg["agent_skills"].get(agent)
-    if isinstance(lst, list):
-        kept = [x for x in lst if x not in STALE_REFS]
-        if kept:
-            cfg["agent_skills"][agent] = kept
-        else:
-            cfg["agent_skills"].pop(agent, None)
 
 # Add our ref to target agents (idempotent).
 def ensure(agent, ref):

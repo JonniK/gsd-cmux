@@ -4,7 +4,7 @@ A thin adapter that runs [GSD (Get Shit Done)](https://www.npmjs.com/package/get
 
 **Project lifecycle in, panes of CLI workers out.** The adapter never re-implements what OMC and GSD already do — it is only the wiring between them.
 
-See [DECISION.md](DECISION.md) for why this exists (the pivot away from a custom cmux bridge) and [DESIGN.md](DESIGN.md) for how the pieces fit.
+See [DESIGN.md](DESIGN.md) for how the pieces fit.
 
 ## Install
 
@@ -59,7 +59,7 @@ During `execute-phase`, each `PLAN-*.md` in the active wave runs as one OMC work
 
 **GSD** owns what to build (roadmap, phase, plan graph, SUMMARY/VERIFICATION contract). **OMC** owns how to run N CLI workers in parallel (team state, task lifecycle, tmux-via-cmux panes, heartbeats). The adapter is the nervous system: it reads GSD's `phase-plan-index`, pre-assigns each plan to a spawned worker via `owner`, polls for `completed|failed`, and stitches the per-plan SUMMARY.mds into a phase SUMMARY. Nothing more.
 
-See [DESIGN.md](DESIGN.md) for the full architecture and [PLAN.md](PLAN.md) for the implementation plan.
+See [DESIGN.md](DESIGN.md) for the full architecture.
 
 ## Future: Z-mode
 
@@ -68,11 +68,9 @@ v1 reroutes only `execute-phase` to OMC. Planner, verifier, researchers still ru
 ## Uninstall
 
 ```bash
-bash uninstall-gsd-cmux.sh      # removes v5.x artifacts (legacy bridge)
-# For the v6 adapter, manually delete:
 rm -rf ~/.claude/skills/gsd-omc-bridge
 rm -f ~/.claude/commands/gsd-omc-{run,execute,verify}.md
-# and optionally strip global:gsd-omc-bridge from .planning/config.json agent_skills
+# Optional: strip "global:gsd-omc-bridge" from .planning/config.json agent_skills.gsd-executor
 ```
 
 ## License

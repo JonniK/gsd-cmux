@@ -1,8 +1,6 @@
 # DESIGN — thin GSD↔OMC adapter
 
-**Status:** Draft, v0.1
-**Supersedes:** `setup-gsd-cmux.sh` v5.x architecture
-**Prereq reading:** [DECISION.md](DECISION.md)
+**Status:** v1
 
 ## 1. Goal
 
@@ -208,13 +206,13 @@ The worker knows these calls because the `gsd-omc-bridge` skill is loaded via `a
 
 All payloads are short ASCII strings; large artifacts go via file paths, not message bodies.
 
-## 8. Answers to Q1–Q5 from DECISION.md
+## 8. Integration constraints
 
-- **Q1: worker tool freedom** — Yes. `cmux omc team N:claude` launches `claude --dangerously-skip-permissions`. Full tool access, same as orchestrator.
-- **Q2: message payload** — `body` is a string. For artifacts: paths, not contents. Up to `~4KB` body size observed in OMC source; we stay well under.
-- **Q3: hook conflicts** — OMC ships `UserPromptSubmit` + `SessionStart` hooks under `$CLAUDE_PLUGIN_ROOT/scripts/`. GSD ships similarly named ones under `~/.claude/hooks/`. They coexist as additive. Install OMC via `/plugin install` (plugin scope) not global merge, so OMC hooks live at `~/.claude/plugins/.../hooks/` and don't collide with GSD's `~/.claude/hooks/`. Verified via `omc doctor conflicts` — no hard conflict, only an informational warning that OMC's CLAUDE.md markers are absent.
-- **Q4: slash-command namespace** — OMC plugin installs under `/oh-my-claudecode:<name>` — no collision with `/gsd-*`. Our new command is `/gsd-omc-execute` (fully qualified; no collision).
-- **Q5: cost knob** — Adapter reads env `GSD_OMC_MAX_PARALLEL` (default 3). Waves with more plans than budget spawn in batches. Also exposes `GSD_OMC_WORKER_MODEL` (defaults to OMC's routing — `sonnet` for executor; override for cost tuning).
+- **Worker tool freedom** — Yes. `cmux omc team N:claude` launches `claude --dangerously-skip-permissions`. Full tool access, same as orchestrator.
+- **Message payload** — `body` is a string. For artifacts: paths, not contents. Up to `~4KB` body size observed in OMC source; we stay well under.
+- **Hook conflicts** — OMC ships `UserPromptSubmit` + `SessionStart` hooks under `$CLAUDE_PLUGIN_ROOT/scripts/`. GSD ships similarly named ones under `~/.claude/hooks/`. They coexist as additive. Install OMC via `/plugin install` (plugin scope) not global merge, so OMC hooks live at `~/.claude/plugins/.../hooks/` and don't collide with GSD's `~/.claude/hooks/`. `omc doctor conflicts` must stay clean.
+- **Slash-command namespace** — OMC plugin installs under `/oh-my-claudecode:<name>` — no collision with `/gsd-*`. Our new command is `/gsd-omc-execute` (fully qualified; no collision).
+- **Cost knob** — Adapter reads env `GSD_OMC_MAX_PARALLEL` (default 3). Waves with more plans than budget spawn in batches. Also exposes `GSD_OMC_WORKER_MODEL` (defaults to OMC's routing — `sonnet` for executor; override for cost tuning).
 
 ## 9. Components to build
 
@@ -228,12 +226,10 @@ All payloads are short ASCII strings; large artifacts go via file paths, not mes
 | 6 | `README.md` | docs | Rewritten: what the adapter does, when to use which entry point (`/gsd-omc-run` full vs `/gsd-omc-execute` phase-only). |
 | 7 | `AGENTS.md` | docs | Invariants updated: new `agent_skills` ref is `global:gsd-omc-bridge`; previous bridge/orchestrator names deprecated. |
 
-**Keep from v5.4.0** (already correct):
-- `agent_skills` schema insight (object keyed by agent-type, `global:` prefix, legacy migration for lists)
-- `write_file` idempotency helper (new/unchanged/differs+backup)
-- Settings-file byte-compare no-op pattern
-
-**Delete via `uninstall-gsd-cmux.sh`** (already written) — see DECISION.md §"Delete".
+**Shared install-script invariants:**
+- `agent_skills` schema: object keyed by agent-type, values are `global:<name>` ref lists (validated by GSD's `init.cjs`).
+- `write_file` idempotency helper (new / unchanged / differs+backup).
+- Settings-file byte-compare no-op pattern.
 
 ## 10. Edge cases and resilience
 
@@ -244,7 +240,7 @@ All payloads are short ASCII strings; large artifacts go via file paths, not mes
 - **Empty wave** — `phase-plan-index` returns `[]` for a wave → orchestrator skips to next.
 - **Phase with zero plans** — error out at precheck with a clear message; no team created.
 
-## 11. Non-goals for v1 (reinforcing DECISION.md)
+## 11. Non-goals for v1
 
 - No pane-layout customization beyond what `cmux omc` already does.
 - No custom message bus or buffer protocol.
@@ -256,11 +252,10 @@ All payloads are short ASCII strings; large artifacts go via file paths, not mes
 
 Adapter is considered done when:
 
-1. `uninstall-gsd-cmux.sh --dry-run --yes` lists every v5.4.0 artifact as detected
-2. `setup-gsd-omc.sh` runs clean on a fresh machine (and twice for idempotency)
-3. `/gsd-omc-verify` passes: creates 2-plan single-wave phase, runs, writes two `SUMMARY.md`, aggregated phase SUMMARY exists, team cleaned up
-4. Manual: open the cmux workspace during verify — two worker panes visibly appear, log activity, disappear at teardown
-5. No regressions in `omc doctor conflicts` (additive, not replacing)
+1. `setup-gsd-omc.sh` runs clean on a fresh machine (and twice for idempotency)
+2. `/gsd-omc-verify` passes: creates 2-plan single-wave phase, runs, writes two `SUMMARY.md`, aggregated phase SUMMARY exists, team cleaned up
+3. Manual: open the cmux workspace during verify — two worker panes visibly appear, log activity, disappear at teardown
+4. No regressions in `omc doctor conflicts` (additive, not replacing)
 
 Metrics to log during verify (for tuning):
 - Wall-time per wave
@@ -375,6 +370,3 @@ $ cmux omc
 
 **Likely approach when we build Z-mode:** MCP shim (option 2). Lowest fork debt, most stable contract. Will require an RFC / ADR in its own repo before implementation — this doc intentionally does not prescribe it.
 
----
-
-Next: [PLAN.md](PLAN.md) — ordered, testable implementation steps.

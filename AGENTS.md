@@ -11,10 +11,8 @@ This repo is a **thin adapter** between GSD and OMC — it is not an orchestrato
 - `commands/gsd-omc-run.md` — full-lifecycle entry point (`/gsd-omc-run`)
 - `commands/gsd-omc-execute.md` — single-phase wave orchestrator (`/gsd-omc-execute`)
 - `commands/gsd-omc-verify.md` — end-to-end smoke test (`/gsd-omc-verify`)
-- `uninstall-gsd-cmux.sh` — removes prior v5.x artifacts
-- `legacy/` — archived v5.4.0 installer (reference; deleted in Phase H)
 
-See [DECISION.md](DECISION.md) for the scope pivot, [DESIGN.md](DESIGN.md) for architecture, and [PLAN.md](PLAN.md) for the implementation plan.
+See [DESIGN.md](DESIGN.md) for architecture.
 
 ## Invariants — do not break these
 
@@ -37,9 +35,9 @@ See [DECISION.md](DECISION.md) for the scope pivot, [DESIGN.md](DESIGN.md) for a
    - Task states are `open → in_progress → completed | failed`. No "done", no "blocked".
    - `create-task` with `owner` pre-assigns to a worker; workers self-identify via `$OMC_TEAM_WORKER` = `<team>/<worker-name>`.
 
-9. **Never touch `$CLAUDE/hooks/` or `$CLAUDE/settings.json` hooks.** OMC owns its lifecycle hooks; GSD owns its own. This adapter is **slash commands + one skill**, nothing else. (Lesson from v5.x hook-conflict bugs surfaced by `omc doctor conflicts`.)
+9. **Never touch `$CLAUDE/hooks/` or `$CLAUDE/settings.json` hooks.** OMC owns its lifecycle hooks; GSD owns its own. This adapter is **slash commands + one skill**, nothing else. `omc doctor conflicts` must stay clean after install.
 
-10. **`/gsd-omc-run` wraps, not intercepts.** v1 reroutes only the `execute-phase` stage through OMC. Planner / verifier / researcher subagents stay inline. Full Task interception is Z-mode (v2) — see DESIGN §15. Do not attempt Z-mode in v1 patches.
+10. **`/gsd-omc-run` wraps, not intercepts.** Reroutes only the `execute-phase` stage through OMC. Planner / verifier / researcher subagents stay inline. Full Task interception is Z-mode — see DESIGN §15. Do not attempt Z-mode in ordinary patches.
 
 ## Verification gate
 
@@ -56,12 +54,10 @@ For `--full`, add `/gsd-omc-run phase _verify-phase` to exercise the wrapper.
 | `commands/gsd-omc-execute.md`                 | Wave-orchestration logic                                  |
 | `commands/gsd-omc-run.md`                     | Mode logic / state-file schema                            |
 | `commands/gsd-omc-verify.md`                  | Add a new regression scenario                             |
-| `DECISION.md`                                 | Never; append-only audit trail                            |
 | `DESIGN.md`                                   | Architectural changes (keep §1–§3 as the contract)        |
-| `PLAN.md`                                     | While planning; frozen after Phase H commit               |
 
 ## Before committing
 
 1. Rerun `/gsd-omc-verify` — assertions pass.
-2. Self-audit against memory lessons (PLAN Phase H checklist).
+2. Self-audit against the memory lessons referenced in the invariants above.
 3. Keep commit atomic — never mix adapter code with unrelated repo changes.
