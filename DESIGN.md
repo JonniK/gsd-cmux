@@ -114,7 +114,14 @@ The adapter **skips OMC's `team-plan` / `team-prd` / `team-verify` / `team-fix`*
    a. Spawn workers FIRST (empty team, N panes)
       N=len(wave); budget = min(N, MAX_PARALLEL)     # knob, default 3
       omc team <N>:claude:executor "<BOOTSTRAP_PROMPT>" \
-        --team-name "<TEAM>" --new-window
+        --team-name "<TEAM>"
+      # DO NOT pass --new-window. Without it, OMC's createTeamSession
+      # (cli.cjs ~27453) uses the current tmux context as leader and
+      # issues `tmux split-window` for each worker. cmux is a tmux
+      # wrapper, so those splits appear as native cmux panes in the
+      # orchestrator's workspace. --new-window would create a dedicated
+      # omc-<team> tmux window that cmux does not render — workers go
+      # invisible.
       # Worker names are derived by OMC as worker-1..worker-N (assigned to
       # panes in spawn order). Workers self-identify via $OMC_TEAM_WORKER
       # env var = "<TEAM>/<worker-name>".

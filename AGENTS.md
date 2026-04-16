@@ -31,9 +31,12 @@ See [DESIGN.md](DESIGN.md) for architecture.
 7. **`using-X` skill is canonical.** For cmux specifics, read `~/.claude/skills/using-cmux/skills/using-cmux/SKILL.md` before writing `cmux send*` / `new-split` / `send-key` logic. Template files drift; the skill is authoritative. (Memory: `feedback_using_skill_is_canonical_source`.)
 
 8. **OMC team API — real signatures, not guesses.** Verify `omc team api <op> --help` before writing the call. Known traps:
-   - `claim-task` returns a `claim_token`; every `transition-task-status` requires it.
-   - Task states are `open → in_progress → completed | failed`. No "done", no "blocked".
+   - `claim-task` returns `.data.claimToken` (camelCase); every `transition-task-status` requires it under `claim_token` (snake_case) in the input.
+   - Task states are `pending | blocked | in_progress | completed | failed`. Workers poll for `pending`, not `open`.
    - `create-task` with `owner` pre-assigns to a worker; workers self-identify via `$OMC_TEAM_WORKER` = `<team>/<worker-name>`.
+   - Every `omc team api <op> --json` wraps the payload as `{ok, operation, data: {...}}` — jq paths go through `.data.*`. Task id field is `.id`.
+
+8a. **`omc team` without `--new-window` for cmux visibility.** OMC's `createTeamSession` (cli.cjs ~27453) only creates a dedicated tmux window when `--new-window` is set. Without the flag, it splits the current tmux pane — and since cmux is a tmux wrapper, those splits surface as native cmux panes. Passing `--new-window` from inside cmux produces invisible workers.
 
 9. **Never touch `$CLAUDE/hooks/` or `$CLAUDE/settings.json` hooks.** OMC owns its lifecycle hooks; GSD owns its own. This adapter is **slash commands + one skill**, nothing else. `omc doctor conflicts` must stay clean after install.
 

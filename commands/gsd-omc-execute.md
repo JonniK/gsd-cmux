@@ -112,9 +112,14 @@ BATCH_SIZE="$MAX_PARALLEL"
 # Bootstrap prompt is static. Workers read $OMC_TEAM_WORKER themselves.
 BOOTSTRAP="You are a GSD executor inside OMC team \$OMC_TEAM_NAME as \$OMC_TEAM_WORKER. Load the gsd-omc-bridge skill (it is in your agent_skills) and execute the lifecycle it describes. Exit when your assigned task transitions to completed or failed."
 
+# NOTE: do NOT pass --new-window. Without it, OMC's createTeamSession
+# detects the current tmux context (cmux is a tmux wrapper), uses the
+# orchestrator's pane as leader, and issues `tmux split-window` for each
+# worker — the splits surface as native cmux panes in the current workspace.
+# With --new-window, OMC creates a dedicated omc-<team> tmux window that
+# cmux does not render, so workers become invisible.
 omc team "$COUNT:claude:executor" "$BOOTSTRAP" \
-  --team-name "$TEAM" \
-  --new-window
+  --team-name "$TEAM"
 ```
 
 Wait ~5s for panes to register:
