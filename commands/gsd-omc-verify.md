@@ -38,6 +38,22 @@ for c in omc cmux claude node jq; do
   command -v "$c" >/dev/null 2>&1 || { echo "✗ missing $c" >&2; exit 1; }
 done
 
+# Fail fast if we're nested inside an omc-team-* tmux session (worker pane
+# pretending to be orchestrator). /gsd-omc-execute would catch it too, but
+# the synthetic scaffold below writes to disk — better to catch here.
+if [ -n "${TMUX:-}" ]; then
+  TMUX_SESSION=$(tmux display-message -p '#S' 2>/dev/null || true)
+  case "$TMUX_SESSION" in
+    omc-team-*)
+      echo "✗ inside an OMC worker session ($TMUX_SESSION) — open a top-level cmux pane and retry" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+# cmux must be new enough for the omc shim bridge
+cmux omc --help >/dev/null 2>&1 || { echo "✗ \`cmux omc\` subcommand missing — update cmux" >&2; exit 1; }
+
 # Confirm the adapter is installed
 [ -f "$HOME/.claude/commands/gsd-omc-execute.md" ] || { echo "✗ /gsd-omc-execute not installed — run setup-gsd-omc.sh first" >&2; exit 1; }
 [ -f "$HOME/.claude/skills/gsd-omc-bridge/SKILL.md" ] || { echo "✗ gsd-omc-bridge skill not installed" >&2; exit 1; }

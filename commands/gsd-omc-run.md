@@ -53,6 +53,19 @@ for c in omc cmux claude node jq; do
   command -v "$c" >/dev/null 2>&1 || { echo "✗ missing $c" >&2; exit 1; }
 done
 
+# cleanup mode runs from anywhere (it only reads team.txt files and calls
+# shutdown APIs). Every other mode drives /gsd-omc-execute downstream,
+# so guard here against the nested-omc-worker pitfall before writing run.json.
+if [ "$MODE" != "cleanup" ] && [ "$MODE" != "status" ] && [ -n "${TMUX:-}" ]; then
+  TMUX_SESSION=$(tmux display-message -p '#S' 2>/dev/null || true)
+  case "$TMUX_SESSION" in
+    omc-team-*)
+      echo "✗ inside OMC worker session ($TMUX_SESSION) — open a top-level cmux pane and retry" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 # Run state dir
 RUN_DIR=".planning/.omc"
 RUN_FILE="$RUN_DIR/run.json"
@@ -110,7 +123,8 @@ for TEAM_FILE in .planning/phases/*/.omc/team.txt; do
   [ -f "$TEAM_FILE" ] || continue
   TEAM=$(cat "$TEAM_FILE")
   echo "shutting down $TEAM"
-  omc team shutdown "$TEAM" 2>/dev/null || true
+  # `cmux omc` so the tmux-shim closes cmux surfaces, not just tmux panes.
+  cmux omc team shutdown "$TEAM" 2>/dev/null || true
   omc team api cleanup --input "{\"team_name\":\"$TEAM\"}" --json 2>/dev/null || true
 done
 exit 0

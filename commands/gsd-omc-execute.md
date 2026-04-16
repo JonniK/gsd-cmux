@@ -38,13 +38,39 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Must be in cmux (panes are the whole point)
-[ -n "${CMUX_SOCKET_PATH:-}" ] || { echo "✗ not inside cmux — open a cmux workspace first" >&2; exit 1; }
-
-# Binaries
+# Binaries first — everything else depends on them.
 for c in omc cmux claude node jq; do
   command -v "$c" >/dev/null 2>&1 || { echo "✗ missing binary: $c" >&2; exit 1; }
 done
+
+# cmux must be new enough to have the `omc` subcommand (tmux-shim bridge).
+# Without it, spawned workers land in a detached omc-team-* tmux session
+# that cmux never registers — see Step 3b NOTE.
+cmux omc --help >/dev/null 2>&1 || { echo "✗ \`cmux omc\` subcommand missing — update cmux" >&2; exit 1; }
+
+# Multiplexer context detection. Three valid outcomes:
+#   cmux        — top-level cmux pane; safe to spawn worker splits here
+#   nested-omc  — already inside an omc-team-* tmux session (we're a worker,
+#                 not an orchestrator); recursive spawn would be invisible
+#   none        — no cmux socket; nothing for workers to register against
+#
+# The nested-omc check is the one that's saved us: without it, a user who
+# runs /gsd-omc-execute from a worker pane gets silently-invisible splits
+# that pile up in the parent omc-team session.
+if [ -z "${CMUX_SOCKET_PATH:-}" ]; then
+  echo "✗ not inside cmux — \$CMUX_SOCKET_PATH unset. Open a cmux workspace in your project and launch claude from the resulting pane." >&2
+  exit 1
+fi
+if [ -n "${TMUX:-}" ]; then
+  TMUX_SESSION=$(tmux display-message -p '#S' 2>/dev/null || true)
+  case "$TMUX_SESSION" in
+    omc-team-*)
+      echo "✗ current tmux session is '$TMUX_SESSION' — you appear to be inside an OMC team worker pane, not a top-level cmux workspace." >&2
+      echo "  /gsd-omc-execute must be the orchestrator, not a nested worker. Open a fresh cmux pane in your project and retry." >&2
+      exit 1
+      ;;
+  esac
+fi
 
 # Phase exists and has plans
 INDEX_JSON=$(node ~/.claude/get-shit-done/bin/gsd-tools.cjs phase-plan-index "$PHASE" --raw)
@@ -112,13 +138,28 @@ BATCH_SIZE="$MAX_PARALLEL"
 # Bootstrap prompt is static. Workers read $OMC_TEAM_WORKER themselves.
 BOOTSTRAP="You are a GSD executor inside OMC team \$OMC_TEAM_NAME as \$OMC_TEAM_WORKER. Load the gsd-omc-bridge skill (it is in your agent_skills) and execute the lifecycle it describes. Exit when your assigned task transitions to completed or failed."
 
-# NOTE: do NOT pass --new-window. Without it, OMC's createTeamSession
-# detects the current tmux context (cmux is a tmux wrapper), uses the
-# orchestrator's pane as leader, and issues `tmux split-window` for each
-# worker — the splits surface as native cmux panes in the current workspace.
-# With --new-window, OMC creates a dedicated omc-<team> tmux window that
-# cmux does not render, so workers become invisible.
-omc team "$COUNT:claude:executor" "$BOOTSTRAP" \
+# NOTE: invoke via `cmux omc team …`, not bare `omc team`.
+#
+# cmux ships an official bridge (`cmux omc …`) that:
+#   1. prepends a private tmux shim to PATH,
+#   2. sets fake TMUX / TMUX_PANE pointing at the current cmux surface,
+#   3. forwards remaining args to `omc`.
+# The shim intercepts OMC's `tmux split-window` calls and rewrites them to
+# `cmux new-split`, so worker panes register as native cmux surfaces in the
+# current workspace.
+#
+# Bare `omc team` is a footgun: OMC's detectTeamMultiplexerContext
+# (cli.cjs ~27191) checks $TMUX first. If TMUX is unset (common inside
+# Claude Code's Bash tool — it only gets CMUX_SURFACE_ID), OMC hits the
+# `!inTmux` branch at ~27465 and spawns a DETACHED tmux session named
+# `omc-team-<team>-<ts>`. That session is invisible to cmux. Even when
+# TMUX is set, the unshimmed `tmux split-window` bypasses cmux's surface
+# registry, so the split pane exists but cmux's UI never sees it.
+#
+# Also: still do NOT pass --new-window. Through the shim, --new-window maps
+# to a dedicated window we don't want; we want sibling splits off the
+# orchestrator pane.
+cmux omc team "$COUNT:claude:executor" "$BOOTSTRAP" \
   --team-name "$TEAM"
 ```
 
@@ -247,9 +288,10 @@ echo "✓ phase summary → $PHASE_SUMMARY"
 
 ```bash
 TEAM=$(cat "$OMC_DIR/team.txt")
-# Shutdown pane workers first
-omc team shutdown "$TEAM" 2>/dev/null || true
-# Cleanup team state (keeps audit under $OMC_DIR since cleanup removes OMC's own state root)
+# Shutdown pane workers first. Use `cmux omc` so the tmux-shim also closes
+# the backing cmux surfaces, not just the tmux panes.
+cmux omc team shutdown "$TEAM" 2>/dev/null || true
+# State cleanup doesn't touch tmux — bare `omc team api` is fine.
 omc team api cleanup --input "{\"team_name\":\"$TEAM\"}" --json || true
 ```
 

@@ -113,15 +113,28 @@ The adapter **skips OMC's `team-plan` / `team-prd` / `team-verify` / `team-fix`*
 4. For each wave in INDEX.waves:
    a. Spawn workers FIRST (empty team, N panes)
       N=len(wave); budget = min(N, MAX_PARALLEL)     # knob, default 3
-      omc team <N>:claude:executor "<BOOTSTRAP_PROMPT>" \
+      cmux omc team <N>:claude:executor "<BOOTSTRAP_PROMPT>" \
         --team-name "<TEAM>"
-      # DO NOT pass --new-window. Without it, OMC's createTeamSession
-      # (cli.cjs ~27453) uses the current tmux context as leader and
-      # issues `tmux split-window` for each worker. cmux is a tmux
-      # wrapper, so those splits appear as native cmux panes in the
-      # orchestrator's workspace. --new-window would create a dedicated
-      # omc-<team> tmux window that cmux does not render — workers go
-      # invisible.
+      # MUST go through `cmux omc …`, not bare `omc team`. cmux ships
+      # an official bridge subcommand that:
+      #   - prepends a private tmux shim to PATH
+      #   - sets fake TMUX / TMUX_PANE pointing at the current cmux surface
+      #   - forwards remaining args to omc
+      # The shim intercepts OMC's `tmux split-window` calls and rewrites
+      # them as `cmux new-split`, so workers land as native cmux surfaces
+      # in the orchestrator's workspace.
+      #
+      # Bare `omc team` has two failure modes:
+      #   (a) TMUX unset (common from Claude Code's Bash tool): OMC's
+      #       detectTeamMultiplexerContext (cli.cjs ~27191) hits the
+      #       `!inTmux` branch (~27465) and spawns a detached
+      #       `omc-team-<name>-<ts>` tmux session cmux never sees.
+      #   (b) TMUX set but no shim: raw `tmux split-window` bypasses
+      #       cmux's surface registry — pane exists, UI doesn't see it.
+      #
+      # Also: still DO NOT pass --new-window. Through the shim, that
+      # maps to a dedicated window; we want sibling splits off the
+      # orchestrator pane.
       # Worker names are derived by OMC as worker-1..worker-N (assigned to
       # panes in spawn order). Workers self-identify via $OMC_TEAM_WORKER
       # env var = "<TEAM>/<worker-name>".

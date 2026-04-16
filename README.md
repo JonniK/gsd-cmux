@@ -148,7 +148,9 @@ Run-level state:
 
 ## Troubleshooting
 
-**Workers run but no panes appear in cmux.** You're likely running an old `~/.claude/commands/gsd-omc-execute.md` that still passes `--new-window` to `omc team`. Re-run `bash setup-gsd-omc.sh --yes` from this repo. (Root cause: `--new-window` makes OMC create a dedicated `omc-<team>` tmux window that cmux does not render as a pane — see invariant #8a in AGENTS.md.)
+**Workers run but no panes appear in cmux.** Either (a) `~/.claude/commands/gsd-omc-execute.md` is stale — re-run `bash setup-gsd-omc.sh --yes` from this repo; or (b) your cmux is too old to have the `cmux omc` subcommand (`cmux omc --help` should not error). The adapter invokes workers via `cmux omc team …`, which installs a tmux shim that routes OMC's splits into native cmux surfaces. Bare `omc team` would either spawn a detached `omc-team-<name>-<ts>` tmux session cmux never registers, or do raw `tmux split-window` that bypasses cmux's surface registry. See invariant #8a in AGENTS.md.
+
+**`✗ inside OMC worker session (omc-team-…)`.** You're running the orchestrator from a pane that is itself inside an OMC team worker session — a nested spawn would produce invisible splits in the parent session. Open a **fresh, top-level** cmux pane in your project directory (not inside another OMC team) and retry.
 
 **Wave hangs / timeout after 30 minutes.** Check a worker pane's scrollback. Most common causes: (a) worker can't find its task — inspect `omc team api list-tasks --input '{"team_name":"<team>"}' --json`; (b) plan references a missing tool; (c) worker is waiting on network. Bump `GSD_OMC_WAVE_TIMEOUT` if the plans genuinely need longer.
 
