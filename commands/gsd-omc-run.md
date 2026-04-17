@@ -53,6 +53,16 @@ for c in omc cmux claude node jq; do
   command -v "$c" >/dev/null 2>&1 || { echo "✗ missing $c" >&2; exit 1; }
 done
 
+# cmux liveness — skip for cleanup/status which must work even when the
+# daemon is dead (that's often why you're running cleanup in the first place).
+if [ "$MODE" != "cleanup" ] && [ "$MODE" != "status" ]; then
+  if ! cmux ping >/dev/null 2>&1; then
+    echo "✗ cmux daemon not responsive (socket exists but \`cmux ping\` fails — app crashed or not launched)" >&2
+    echo "  Fix: rm -f \"\$CMUX_SOCKET_PATH\" && open /Applications/cmux.app, then retry from a pane inside it." >&2
+    exit 1
+  fi
+fi
+
 # cleanup mode runs from anywhere (it only reads team.txt files and calls
 # shutdown APIs). Every other mode drives /gsd-omc-execute downstream,
 # so guard here against the nested-omc-worker pitfall before writing run.json.

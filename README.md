@@ -152,6 +152,8 @@ Run-level state:
 
 **`✗ inside OMC worker session (omc-team-…)`.** You're running the orchestrator from a pane that is itself inside an OMC team worker session — a nested spawn would produce invisible splits in the parent session. Open a **fresh, top-level** cmux pane in your project directory (not inside another OMC team) and retry.
 
+**`✗ cmux daemon not responsive (socket exists but cmux ping fails)`.** cmux.app has crashed or was never launched, but your shell still has leftover `CMUX_*` env vars and a stale `cmux.sock` on disk. Classic symptom: `CMUX_SOCKET_PATH` is set, `cmux --version` works, but every real command returns `Broken pipe (errno 32)`. Fix: `pgrep -fl 'cmux.app/Contents/MacOS/cmux'` (expect empty) → `rm -f "$CMUX_SOCKET_PATH"` → `open /Applications/cmux.app` → open a workspace in cmux → launch claude inside that pane → retry. Do **not** try to `unset CMUX_SOCKET_PATH` and proceed — the adapter is cmux-required by design; without cmux, use plain `/gsd-execute-phase` instead.
+
 **Wave hangs / timeout after 30 minutes.** Check a worker pane's scrollback. Most common causes: (a) worker can't find its task — inspect `omc team api list-tasks --input '{"team_name":"<team>"}' --json`; (b) plan references a missing tool; (c) worker is waiting on network. Bump `GSD_OMC_WAVE_TIMEOUT` if the plans genuinely need longer.
 
 **`✗ not inside cmux`.** Open a cmux workspace in the project dir and rerun from the Claude session inside it. The orchestrator needs `$CMUX_SOCKET_PATH` and a real tmux leader pane to split against.

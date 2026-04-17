@@ -38,6 +38,15 @@ for c in omc cmux claude node jq; do
   command -v "$c" >/dev/null 2>&1 || { echo "✗ missing $c" >&2; exit 1; }
 done
 
+# cmux daemon must actually respond — socket file may exist but the app
+# can be crashed/unstarted, leaving CMUX_* env vars as stale ghosts.
+if ! cmux ping >/dev/null 2>&1; then
+  echo "✗ cmux daemon not responsive (socket exists but \`cmux ping\` fails)" >&2
+  echo "  Relaunch cmux.app and retry from a pane inside it:" >&2
+  echo "    rm -f \"\$CMUX_SOCKET_PATH\" && open /Applications/cmux.app" >&2
+  exit 1
+fi
+
 # Fail fast if we're nested inside an omc-team-* tmux session (worker pane
 # pretending to be orchestrator). /gsd-omc-execute would catch it too, but
 # the synthetic scaffold below writes to disk — better to catch here.

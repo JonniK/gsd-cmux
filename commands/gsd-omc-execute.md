@@ -48,17 +48,30 @@ done
 # that cmux never registers — see Step 3b NOTE.
 cmux omc --help >/dev/null 2>&1 || { echo "✗ \`cmux omc\` subcommand missing — update cmux" >&2; exit 1; }
 
-# Multiplexer context detection. Three valid outcomes:
-#   cmux        — top-level cmux pane; safe to spawn worker splits here
-#   nested-omc  — already inside an omc-team-* tmux session (we're a worker,
-#                 not an orchestrator); recursive spawn would be invisible
-#   none        — no cmux socket; nothing for workers to register against
+# Multiplexer context detection. Four distinct bad states, one good:
+#   cmux-live    — CMUX_SOCKET_PATH set AND cmux daemon responsive; proceed
+#   cmux-stale   — CMUX_SOCKET_PATH set BUT cmux writes EPIPE (app crashed
+#                  or never launched; env vars are leftover ghosts)
+#   nested-omc   — inside an omc-team-* tmux session (we're a worker pane,
+#                  not an orchestrator); recursive spawn would be invisible
+#   plain-tmux   — real tmux, no cmux env at all
+#   none         — no multiplexer at all
 #
-# The nested-omc check is the one that's saved us: without it, a user who
-# runs /gsd-omc-execute from a worker pane gets silently-invisible splits
-# that pile up in the parent omc-team session.
+# cmux-stale is the nasty one: the socket file exists, $CMUX_SOCKET_PATH
+# points at it, but the daemon is dead. Every cmux call hits broken pipe.
+# We verify with an actual liveness probe.
 if [ -z "${CMUX_SOCKET_PATH:-}" ]; then
   echo "✗ not inside cmux — \$CMUX_SOCKET_PATH unset. Open a cmux workspace in your project and launch claude from the resulting pane." >&2
+  exit 1
+fi
+if ! cmux --password "${CMUX_SOCKET_PASSWORD:-}" ping >/dev/null 2>&1 && ! cmux ping >/dev/null 2>&1; then
+  echo "✗ cmux daemon not responsive — \$CMUX_SOCKET_PATH points at $CMUX_SOCKET_PATH but \`cmux ping\` fails." >&2
+  echo "  Most common cause: cmux.app crashed or was never started; CMUX_* env vars are leftover from a previous run." >&2
+  echo "  Fix:" >&2
+  echo "    1. pgrep -fl 'cmux.app/Contents/MacOS/cmux'    # verify it's dead" >&2
+  echo "    2. rm -f \"\$CMUX_SOCKET_PATH\"                  # clear stale socket" >&2
+  echo "    3. open /Applications/cmux.app                  # relaunch" >&2
+  echo "    4. Open a workspace in cmux, launch claude inside it, retry from there." >&2
   exit 1
 fi
 if [ -n "${TMUX:-}" ]; then
