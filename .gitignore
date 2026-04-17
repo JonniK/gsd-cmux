@@ -12,3 +12,5 @@ gsd-auto-cmux.sh
 
 # Backups created by the installer
 *.bak
+example
+.history

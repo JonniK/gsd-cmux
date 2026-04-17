@@ -93,14 +93,36 @@ Report the echoed summary to the user and continue.
 
 ## Step 2 — Prepare team state
 
+OMC 4.11.6 has **no `--team-name` flag**. `omc team` always derives the team
+name via `slugifyTask(task)` (cli.cjs ~81798): lowercase → replace non-alnum
+runs with `-` → collapse `-+` → trim leading/trailing `-` → slice 30 chars.
+We exploit the fact that slugify is the **identity function** on strings of
+the form `[a-z0-9][a-z0-9-]{0,28}[a-z0-9]` with no `--` runs and ≤30 chars.
+So we pick a valid team name and pass **exactly that string** as the task
+argument in Step 3b — OMC then uses it verbatim as the team name.
+
 ```bash
-# Team name must match OMC regex ^[a-z0-9][a-z0-9-]{0,29}$ (max 30 chars)
+# OMC spawn regex:       /^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/  (max 50, end alnum)
+# OMC create-task regex: /^[a-z0-9][a-z0-9-]{0,29}$/          (max 30, any end)
+# Intersection: ≤30 chars, start+end alnum, only [a-z0-9-], no "--".
 RAND=$(od -An -N2 -i /dev/urandom | tr -d ' ')
 # Budget: "gsd-" (4) + slug + "-" (1) + RAND (up to 5) = room for slug ≤ 20
-SLUG=$(echo "$PHASE" | tr '[:upper:]_' '[:lower:]-' | sed 's/[^a-z0-9-]//g' | cut -c1-20 | sed 's/-*$//')
+SLUG=$(echo "$PHASE" \
+  | tr '[:upper:]_' '[:lower:]-' \
+  | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-//; s/-$//' \
+  | cut -c1-20 | sed 's/-*$//')
 TEAM="gsd-${SLUG}-${RAND}"
-# Hard-cap in case slug ends empty or RAND was longer than expected
-TEAM=$(echo "$TEAM" | cut -c1-30 | sed 's/-*$//')
+# Collapse any accidental "--" and strip trailing "-" after the cut.
+TEAM=$(echo "$TEAM" | sed -E 's/-+/-/g; s/-$//' | cut -c1-30 | sed 's/-*$//')
+
+# Invariant: slugifyTask($TEAM) must equal $TEAM, else OMC will pick a
+# different name than what we persist to team.txt and every subsequent
+# `omc team api` call will fail with "team not found".
+if ! [[ "$TEAM" =~ ^[a-z0-9][a-z0-9-]{0,28}[a-z0-9]$ ]] || [[ "$TEAM" == *--* ]]; then
+  echo "✗ generated team name '$TEAM' is not slugify-invariant — regenerate" >&2
+  exit 1
+fi
+
 OMC_DIR="$PHASE_DIR/.omc"
 mkdir -p "$OMC_DIR"
 echo "$TEAM" > "$OMC_DIR/team.txt"
@@ -127,7 +149,7 @@ If `--resume`: skip this wave if every plan's SUMMARY.md already exists and is n
 
 ### 3b. Spawn N workers BEFORE creating tasks
 
-Workers self-identify via `$OMC_TEAM_WORKER` env. OMC names them `worker-1..worker-N` in spawn order. The adapter skill (`global:gsd-omc-bridge`) teaches them the lifecycle.
+Workers self-identify via `$OMC_TEAM_WORKER` env. OMC names them `worker-1..worker-N` in spawn order. The adapter skill (`global:gsd-omc-bridge`) is registered on the `gsd-executor` agent type via `.planning/config.json` (see `setup-gsd-omc.sh`); the `claude:executor` role spec plus the presence of `$OMC_TEAM_WORKER` in the worker env triggers auto-load of that skill, which drives the full lifecycle (claim → execute → SUMMARY.md → transition).
 
 ```bash
 cmux log --source gsd-orch --level info "wave $WAVE_KEY: spawning $COUNT panes"
@@ -135,10 +157,7 @@ cmux log --source gsd-orch --level info "wave $WAVE_KEY: spawning $COUNT panes"
 # until its tasks complete before the next batch begins.
 BATCH_SIZE="$MAX_PARALLEL"
 
-# Bootstrap prompt is static. Workers read $OMC_TEAM_WORKER themselves.
-BOOTSTRAP="You are a GSD executor inside OMC team \$OMC_TEAM_NAME as \$OMC_TEAM_WORKER. Load the gsd-omc-bridge skill (it is in your agent_skills) and execute the lifecycle it describes. Exit when your assigned task transitions to completed or failed."
-
-# NOTE: invoke via `cmux omc team …`, not bare `omc team`.
+# Spawn via `cmux omc team …`, not bare `omc team`.
 #
 # cmux ships an official bridge (`cmux omc …`) that:
 #   1. prepends a private tmux shim to PATH,
@@ -156,17 +175,29 @@ BOOTSTRAP="You are a GSD executor inside OMC team \$OMC_TEAM_NAME as \$OMC_TEAM_
 # TMUX is set, the unshimmed `tmux split-window` bypasses cmux's surface
 # registry, so the split pane exists but cmux's UI never sees it.
 #
-# Also: still do NOT pass --new-window. Through the shim, --new-window maps
-# to a dedicated window we don't want; we want sibling splits off the
+# Also: do NOT pass --new-window. Through the shim, --new-window maps to a
+# dedicated window we don't want; we want sibling splits off the
 # orchestrator pane.
-cmux omc team "$COUNT:claude:executor" "$BOOTSTRAP" \
-  --team-name "$TEAM"
+#
+# Task argument = $TEAM. OMC uses slugifyTask($TEAM) = $TEAM as the team
+# name (see Step 2 invariant) and broadcasts the same string to each
+# worker's initial inbox. Workers don't need an elaborate prose bootstrap:
+# the `claude:executor` role + the `gsd-omc-bridge` entry in
+# .planning/config.json's agent_skills drives skill auto-load, and the
+# skill itself starts with `Detect your context` / `OMC_TEAM_WORKER`.
+cmux omc team "$COUNT:claude:executor" "$TEAM"
 ```
 
-Wait ~5s for panes to register:
+Wait ~5s for panes to register, then verify OMC actually created `$TEAM` (if slugify picked a different name we would diverge silently from every API call downstream):
 
 ```bash
 sleep 5
+omc team status "$TEAM" >/dev/null 2>&1 || {
+  echo "✗ team '$TEAM' not registered after spawn — slugify divergence or spawn failed" >&2
+  # Show what DID get created, for debugging
+  ls -d .omc/state/team/*/ 2>/dev/null | tail -5 >&2
+  exit 1
+}
 omc team status "$TEAM"
 ```
 

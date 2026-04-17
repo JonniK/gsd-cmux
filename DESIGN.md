@@ -88,9 +88,11 @@ The adapter **skips OMC's `team-plan` / `team-prd` / `team-verify` / `team-fix`*
 
 ### 4.3 Identifiers
 
-- OMC team name: `gsd-<slug>-<rand>` (must match `/^[a-z0-9][a-z0-9-]{0,29}$/` — max 30 chars — validated by `omc team api`; slug is truncated to ≤ 20 chars)
-- OMC task ids: one per GSD plan. Stored by OMC in `~/.claude/tasks/<team-name>/<n>.json`
-- Worker names: `w-<plan-id>` (OMC assigns)
+- OMC team name: `gsd-<slug>-<rand>`. Constraints:
+  - Must match `/^[a-z0-9][a-z0-9-]{0,29}$/` (create-task API, max 30 chars) **and** `/^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/` (spawn validator, must end alnum). Intersection = ≤30 chars, start+end alnum, only `[a-z0-9-]`, no `--` runs.
+  - OMC 4.x has **no `--team-name` flag** on `omc team`. The team name is always auto-derived as `slugifyTask(task)` from the spawn task-description argument (cli.cjs ~81798). The adapter therefore picks a slugify-invariant name and passes it **as the task argument**, so `slugifyTask(name) === name` and OMC uses it verbatim. See §5 step 4a.
+- OMC task ids: one per GSD plan. Stored by OMC in `.omc/state/team/<team-name>/tasks/<id>.json` under the leader's working directory.
+- Worker names: `worker-1..worker-N` (OMC assigns in spawn order). Workers self-identify via `$OMC_TEAM_WORKER` (`<team>/<worker-name>`).
 
 ## 5. Orchestrator flow
 
@@ -113,8 +115,17 @@ The adapter **skips OMC's `team-plan` / `team-prd` / `team-verify` / `team-fix`*
 4. For each wave in INDEX.waves:
    a. Spawn workers FIRST (empty team, N panes)
       N=len(wave); budget = min(N, MAX_PARALLEL)     # knob, default 3
-      cmux omc team <N>:claude:executor "<BOOTSTRAP_PROMPT>" \
-        --team-name "<TEAM>"
+      cmux omc team <N>:claude:executor "<TEAM>"
+      # Pass $TEAM as the task-description argument. OMC 4.x has no
+      # --team-name flag; it always derives teamName = slugifyTask(task)
+      # (cli.cjs ~81798). Our $TEAM is slugify-invariant — see §4.3 — so
+      # OMC uses it verbatim. Each worker receives $TEAM as its initial
+      # inbox message; no elaborate prose bootstrap is needed because the
+      # `claude:executor` role + presence of $OMC_TEAM_WORKER in the
+      # worker env triggers auto-load of the `gsd-omc-bridge` skill
+      # (registered on agent-type `gsd-executor` in .planning/config.json
+      # by setup-gsd-omc.sh). The skill drives the full lifecycle.
+      #
       # MUST go through `cmux omc …`, not bare `omc team`. cmux ships
       # an official bridge subcommand that:
       #   - prepends a private tmux shim to PATH
@@ -132,12 +143,11 @@ The adapter **skips OMC's `team-plan` / `team-prd` / `team-verify` / `team-fix`*
       #   (b) TMUX set but no shim: raw `tmux split-window` bypasses
       #       cmux's surface registry — pane exists, UI doesn't see it.
       #
-      # Also: still DO NOT pass --new-window. Through the shim, that
-      # maps to a dedicated window; we want sibling splits off the
-      # orchestrator pane.
-      # Worker names are derived by OMC as worker-1..worker-N (assigned to
-      # panes in spawn order). Workers self-identify via $OMC_TEAM_WORKER
-      # env var = "<TEAM>/<worker-name>".
+      # Also: DO NOT pass --new-window. Through the shim, that maps to
+      # a dedicated window; we want sibling splits off the orchestrator
+      # pane. Worker names are derived by OMC as worker-1..worker-N
+      # (assigned to panes in spawn order). Workers self-identify via
+      # $OMC_TEAM_WORKER = "<TEAM>/<worker-name>".
 
    b. Create tasks pre-assigned to each worker
       Build worker-name list via `omc team status <TEAM>` → parse worker names.
@@ -171,7 +181,7 @@ The adapter **skips OMC's `team-plan` / `team-prd` / `team-verify` / `team-fix`*
 
 ## 6. Worker prompt contract
 
-Each `omc team N:claude:executor` worker is launched with a bootstrap prompt (interpolated by the orchestrator — dynamic values as literals, per feedback memory). The prompt is static — worker identity comes from the `$OMC_TEAM_WORKER` env var OMC sets at spawn time (`"<team>/<worker-name>"`).
+Each `omc team N:claude:executor` worker's **initial inbox message** is whatever string the orchestrator passed as the task-description argument — in the adapter flow, that string is just `$TEAM`. Worker identity comes from the `$OMC_TEAM_WORKER` env var OMC sets at spawn time (`"<team>/<worker-name>"`), and the skill `global:gsd-omc-bridge` is auto-loaded via `agent_skills` on the `gsd-executor` agent-type (wired by `setup-gsd-omc.sh`). That skill encodes the full lifecycle below. No prose prompt is interpolated into the task argument because OMC consumes the first 30 chars for team-name derivation; see §4.3.
 
 ```
 You are a GSD worker. OMC has set these env vars:
